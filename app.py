@@ -2,9 +2,11 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from PIL import Image, ImageOps
 import io, os, uuid, requests
 import re
+from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+CORS(app, resources={r"/*": {"origins": "*"}}) 
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
