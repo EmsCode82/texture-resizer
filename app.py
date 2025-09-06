@@ -1,8 +1,10 @@
 from flask import Flask, request, jsonify, send_file, send_from_directory
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 import io, os, uuid, requests
 import re
 from flask_cors import CORS
+import numpy as np  # Added for PBR generation
+from scipy.ndimage import convolve
 
 app = Flask(__name__)
 
@@ -71,7 +73,7 @@ def sanitize(s: str) -> str:
     return re.sub(r'[^A-Za-z0-9_\-]+', '-', (s or '').strip())[:60]
 
 def save_variant(img: Image.Image, w: int, h: int, fmt: str,
-                 pack=None, race=None, label=None, original_name=None):
+                 pack=None, race=None, label=None, original_name=None, suffix="", compress=False):
     fmt = (fmt or "png").lower()
     if fmt not in ("png", "tga"):
         fmt = "png"
@@ -79,24 +81,57 @@ def save_variant(img: Image.Image, w: int, h: int, fmt: str,
 
     # sanitize provided metadata and original filename
     safe_name = sanitize(os.path.splitext(original_name or "")[0])
-    parts = [safe_name, sanitize(pack), sanitize(race), sanitize(label), f"{w}x{h}"]
+    parts = [safe_name, sanitize(pack), sanitize(race), sanitize(label), suffix, f"{w}x{h}"]
     base = "_".join([x for x in parts if x]) or f"resized_{w}x{h}"
 
     # always append unique id to prevent overwriting
     fname = f"{base}_{uuid.uuid4().hex}.{ext}"
     path = os.path.join(OUTPUT_DIR, fname)
 
-    img.save(path, "TGA" if ext == "tga" else "PNG")
+    # Save with compression for PNGs
+    if ext == "png" and compress:
+        img.save(path, "PNG", optimize=True)
+    else:
+        img.save(path, "TGA" if ext == "tga" else "PNG")
     size_bytes = os.path.getsize(path)
     return fname, path, size_bytes
 
+def generate_normal_map(base_img: Image.Image):
+    gray = base_img.convert('L')
+    array = np.array(gray, dtype=float)
+    
+    # Sobel kernels
+    sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+    sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
+    
+    # Apply filters with convolution
+    dx = convolve(array, sobel_x, mode='constant', cval=0.0)
+    dy = convolve(array, sobel_y, mode='constant', cval=0.0)
+    
+    # Compute normals (unchanged)
+    dz = np.ones_like(dx) * 10.0  # Strength factor
+    normal = np.dstack((-dx, -dy, dz))
+    norm = np.linalg.norm(normal, axis=2)[:,:,np.newaxis]
+    normal = (normal / norm) * 0.5 + 0.5
+    normal = np.clip(normal * 255, 0, 255).astype(np.uint8)
+    
+    return Image.fromarray(normal, 'RGB')  # Normals are RGB
+
+# New: Generate roughness map (simple invert grayscale)
+def generate_roughness_map(base_img: Image.Image):
+    gray = base_img.convert('L')
+    inverted = ImageOps.invert(gray)
+    return inverted.convert('RGB')  # Roughness often grayscale, but RGB for consistency
+
 def generate_batch_variants(img: Image.Image, sizes, formats, mode,
-                            pack, race, label, original_name=None):
+                            pack, race, label, original_name=None, pbr=False, compress=False):
     """Builds outputs for multiple sizes/formats (PNG/TGA) and returns the results dict."""
     results = {f: {} for f in formats}
+    if pbr:
+        results['pbr'] = {}  # Sub-dict for PBR maps
 
     for target in sizes:
-        # Build base square per size
+        # Build base square per size (unchanged)
         if mode == "stretch":
             base_img = img.resize((target, target), Image.Resampling.LANCZOS)
         elif mode == "crop":
@@ -116,12 +151,42 @@ def generate_batch_variants(img: Image.Image, sizes, formats, mode,
         for fmt in formats:  # fmt in {"png","tga"}
             fname, _, size_bytes = save_variant(
                 base_img, target, target, fmt,
-                pack=pack, race=race, label=label, original_name=original_name
+                pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
             )
             results[fmt][str(target)] = {
                 "url": f"{request.host_url.rstrip('/')}/files/{fname}",
                 "bytes": size_bytes,
                 "mb": round(size_bytes / (1024 * 1024), 3),
+            }
+        
+        if pbr:
+            # Generate PBR maps from resized base
+            normal_img = generate_normal_map(base_img)
+            roughness_img = generate_roughness_map(base_img)
+            
+            # Save normal (RGB, PNG only for now)
+            n_fname, _, n_bytes = save_variant(
+                normal_img, target, target, "png",
+                pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
+            )
+            
+            # Save roughness (RGB, PNG)
+            r_fname, _, r_bytes = save_variant(
+                roughness_img, target, target, "png",
+                pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
+            )
+            
+            results['pbr'][str(target)] = {
+                "normal": {
+                    "url": f"{request.host_url.rstrip('/')}/files/{n_fname}",
+                    "bytes": n_bytes,
+                    "mb": round(n_bytes / (1024 * 1024), 3),
+                },
+                "roughness": {
+                    "url": f"{request.host_url.rstrip('/')}/files/{r_fname}",
+                    "bytes": r_bytes,
+                    "mb": round(r_bytes / (1024 * 1024), 3),
+                }
             }
 
     return results
@@ -200,8 +265,10 @@ def resize_endpoint():
         y = (target_h - fitted.height) // 2
         out.paste(fitted, (x, y))
 
+    compress = request.args.get("compress", "0") == "1"
+
     fname, save_path, size_bytes = save_variant(
-        out, target_w, target_h, fmt, pack=pack, race=race, label=label, original_name=original_name
+        out, target_w, target_h, fmt, pack=pack, race=race, label=label, original_name=original_name, compress=compress
     )
 
     if download:
@@ -223,22 +290,24 @@ def index():
     return """
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Texture Resizer</title></head>
+  <head><meta charset="utf-8"><title>Assetgineer Texture Service</title></head>
   <body style="font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; line-height:1.6;">
-    <h1>Local Texture Resizer</h1>
+    <h1>Assetgineer Texture Service</h1>
 
     <form method="post" enctype="multipart/form-data">
       <p><label>Upload image: <input type="file" name="file"></label></p>
       <p><label>OR Image URL: <input type="url" name="imageUrl" placeholder="https://example.com/image.png" style="width:100%;"></label></p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
-        <button formaction="/resize?size=512&download=1">Resize to 512</button>
-        <button formaction="/resize?size=1024&download=1">Resize to 1024</button>
-        <button formaction="/resize?size=2048&download=1">Resize to 2048</button>
-        <button formaction="/resize?size=4096&download=1">Resize to 4096</button>
-        <button formaction="/resize?size=pow2&download=1">Resize to POW2</button>
-        <button formaction="/batch" formmethod="post" formtarget="_blank">Batch (512/1024/2048/4096)</button>
-        <button formaction="/profile/gameasset" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (PNG+TGA 512–4096)</button>
+        <button formaction="/resize?size=512&download=1&compress=1">Resize to 512 (Compressed)</button>
+        <button formaction="/resize?size=1024&download=1&compress=1">Resize to 1024 (Compressed)</button>
+        <button formaction="/resize?size=2048&download=1&compress=1">Resize to 2048 (Compressed)</button>
+        <button formaction="/resize?size=4096&download=1&compress=1">Resize to 4096 (Compressed)</button>
+        <button formaction="/resize?size=pow2&download=1&compress=1">Resize to POW2 (Compressed)</button>
+        <button formaction="/batch?compress=1" formmethod="post" formtarget="_blank">Batch (Compressed)</button>
+        <button formaction="/profile/gameasset?compress=1" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (Compressed)</button>
+        <button formaction="/profile/gameasset?pbr=1&compress=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR (Compressed)</button>
+        <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
       </div>
     </form>
 
@@ -250,6 +319,8 @@ def index():
     This tool takes <b>any common image format</b> you upload (PNG, JPG, JPEG, GIF, BMP, WebP, etc.) 
     and automatically prepares it for use in games or digital projects. No matter the input, 
     your images are normalized to <code>RGBA</code> and exported in <b>PNG</b> or <b>TGA</b> format.
+    It also generates basic PBR maps (normal and roughness) and validates textures for common issues.
+    Use the <code>Compressed</code> options to reduce file sizes without quality loss.
     </p>
 
     <h3>How It Works</h3>
@@ -257,7 +328,9 @@ def index():
     <li><b>Upload a file</b> (any format) or paste an image link.</li>
     <li><b>Pick a size</b> — for example 512, 1024, 2048, or 4096 pixels.</li>
     <li>The tool will <b>resize and clean up</b> your image automatically.</li>
-    <li>You can also create a whole <b>pack of images</b> in different sizes with one click.</li>
+    <li>Optionally generate PBR maps (normal from edges, roughness from inverted grayscale).</li>
+    <li>Validate for issues like seams, alpha problems, or artifacts.</li>
+    <li>You can also create a whole <b>pack of images</b> in different sizes with one click, with compression available.</li>
     </ul>
 
     <h3>Why It’s Useful</h3>
@@ -266,14 +339,18 @@ def index():
     <li>Makes sure outputs are game-ready in <code>PNG</code> and <code>TGA</code> formats only.</li>
     <li>Automatically keeps transparency (so backgrounds stay clear).</li>
     <li>Organizes filenames with labels you provide (like pack, race, or item name).</li>
+    <li>Generates basic PBR maps (normal, roughness) for modern rendering in Unity/Unreal.</li>
+    <li>Validates textures for quality issues, helping ensure marketplace compliance.</li>
+    <li>Offers compression to reduce file sizes, improving download and storage efficiency.</li>
     </ul>
 
     <h3>Example</h3>
     <ol>
     <li>You upload <code>dragon.jpg</code> or <code>dragon.png</code>.</li>
-    <li>You press <b>GameAsset Pack</b>.</li>
+    <li>You press <b>GameAsset Pack with PBR (Compressed)</b>.</li>
     <li>You instantly get 4 versions: 512, 1024, 2048, and 4096.</li>
-    <li>Each version is exported as PNG and TGA, with a direct download link.</li>
+    <li>Each version includes compressed base PNG/TGA plus normal and roughness maps, with direct download links.</li>
+    <li>Press <b>Validate Image</b> to check for issues like seams or noise.</li>
     </ol>
 
     <hr style="margin:28px 0;">
@@ -286,7 +363,9 @@ def index():
     <b>game-ready textures</b>. It accepts <b>any common input format</b> 
     (PNG, JPG, JPEG, GIF, BMP, WebP, etc.), normalizes them to <code>RGBA</code>, 
     and exports clean, consistent <code>PNG</code> or <code>TGA</code> files. 
-    It supports power-of-two constraints, batch generation, and optional metadata tagging.
+    It supports power-of-two constraints, batch generation, optional metadata tagging,
+    basic PBR map generation (normal and roughness approximations), quality validation,
+    and optional compression for PNG outputs.
     </p>
 
     <h3>1. Input Handling</h3>
@@ -311,6 +390,7 @@ def index():
     <li><code>&pow2=1</code> → round each side individually to nearest power-of-two</li>
     <li><code>&pack=&race=&label=</code> → optional metadata in filenames</li>
     <li><code>&download=1</code> → return file directly instead of JSON</li>
+    <li><code>&compress=1</code> → optimize PNG files for smaller size</li>
     </ul>
 
     <h3>3. Batch Endpoint <code>/batch</code></h3>
@@ -319,30 +399,51 @@ def index():
     <li>Default sizes: 512, 1024, 2048, 4096</li>
     <li>Default formats: PNG (can also include TGA)</li>
     <li>All variants share the same mode/flags</li>
+    <li>Add <code>&pbr=1</code> for normal/roughness maps</li>
+    <li>Add <code>&compress=1</code> for optimized PNGs</li>
     </ul>
-    <p>Returns JSON: format → size → {URL, file size in bytes/MB}</p>
+    <p>Returns JSON: format → size → {URL, file size in bytes/MB}; plus 'pbr' key if enabled</p>
 
     <h3>4. GameAsset Profile <code>/profile/gameasset</code></h3>
     <ul>
     <li>Convenience wrapper around <code>/batch</code></li>
     <li>Defaults: sizes = 512,1024,2048,4096 | formats = PNG,TGA | mode = fit</li>
+    <li>Add <code>&pbr=1</code> for PBR maps</li>
+    <li>Add <code>&compress=1</code> for optimized PNGs</li>
     <li>One-click export of complete game-ready texture packs</li>
     </ul>
 
-    <h3>5. Output</h3>
+    <h3>5. PBR Generation</h3>
+    <p>Opt-in with <code>&pbr=1</code> on /batch or /profile/gameasset. Generates:</p>
+    <ul>
+    <li>Normal map: Approximated from edges using Sobel filters (RGB PNG).</li>
+    <li>Roughness map: Simple inverted grayscale (RGB PNG).</li>
+    <li>Note: These are basic approximations; for production, use dedicated tools.</li>
+    <li>PNG outputs can be compressed with <code>&compress=1</code></li>
+    </ul>
+
+    <h3>6. Validate Endpoint <code>/validate</code></h3>
+    <p>Checks input image for common texture issues. Same input as other endpoints.</p>
+    <ul>
+    <li>Returns JSON: {ok: true/false, issues: [...], warnings: [...]}</li>
+    <li>Checks: Alpha problems, potential seams (for tiling), high variance (artifacts/noise).</li>
+    </ul>
+
+    <h3>7. Output</h3>
     <ul>
     <li>All outputs saved under <code>output/</code> folder</li>
-    <li>Filenames include original name, metadata, resolution, and unique ID</li>
-    <li>Example: <code>griffonwoman_medieval_elf_1024x1024_abcd1234.png</code></li>
+    <li>Filenames include original name, metadata, suffix (e.g., _base, _normal), resolution, and unique ID</li>
+    <li>Example: <code>griffonwoman_medieval_elf_base_1024x1024_abcd1234.png</code></li>
     <li>Publicly accessible via <code>/files/&lt;filename&gt;</code></li>
     </ul>
 
     <h3>Typical Workflow</h3>
     <ol>
     <li>Upload <code>griffonwoman.jpg</code> (2000×1600)</li>
-    <li>Call: <code>POST /profile/gameasset?pack=medieval&race=elf&label=sword</code></li>
-    <li>Receive PNG+TGA outputs for 512, 1024, 2048, 4096</li>
-    <li>Each with original name included, metadata tags, direct URL, and file size info</li>
+    <li>Call: <code>POST /profile/gameasset?pack=medieval&race=elf&label=sword&pbr=1&compress=1</code></li>
+    <li>Receive compressed PNG+TGA base outputs plus normal/roughness for 512, 1024, 2048, 4096</li>
+    <li>Call: <code>POST /validate</code> to check for issues</li>
+    <li>Each file has metadata tags, direct URL, and file size info</li>
     </ol>
 
     <hr style="margin:28px 0;">
@@ -354,17 +455,20 @@ def index():
         &format=png|tga
         &pack=&race=&label=
         &download=0|1
+        &compress=0|1
 
-    POST /batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit
+    POST /batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit&pbr=0|1&compress=0|1
 
-    POST /profile/gameasset   (PNG+TGA, sizes 512–4096)
+    POST /profile/gameasset   (PNG+TGA, sizes 512–4096)&pbr=0|1&compress=0|1
+    POST /validate            (Checks for issues; same body)
+
     Body for all:
     - multipart/form-data with file field "file", or
     - JSON: {"imageUrl":"https://yourcdn.com/image.png"}
     </pre>
   </body>
 </html>
-    """
+"""
 
 @app.get("/favicon.ico")
 def favicon():
@@ -391,6 +495,7 @@ def batch():
     pack          = request.args.get("pack")
     race          = request.args.get("race")
     label         = request.args.get("label")
+    pbr           = request.args.get("pbr", "0") == "1"  # New: Opt-in PBR
 
     if sizes_param:
         try:
@@ -407,9 +512,10 @@ def batch():
     if not formats:
         return jsonify({"error": "No valid formats. Use formats=png,tga"}), 400
 
-    results = generate_batch_variants(img, sizes, formats, mode, pack, race, label, original_name=original_name)
-    return jsonify({"ok": True, "results": results})
+    compress = request.args.get("compress", "0") == "1"
 
+    results = generate_batch_variants(img, sizes, formats, mode, pack, race, label, original_name=original_name, pbr=pbr, compress=compress)
+    return jsonify({"ok": True, "results": results})
 
 @app.post("/profile/gameasset")
 def profile_gameasset():
@@ -428,6 +534,7 @@ def profile_gameasset():
     pack          = request.args.get("pack")
     race          = request.args.get("race")
     label         = request.args.get("label")
+    pbr           = request.args.get("pbr", "0") == "1"  # New: Opt-in PBR
 
     # sizes (with validation)
     try:
@@ -443,11 +550,58 @@ def profile_gameasset():
     if not formats:
         return jsonify({"error": "No valid formats. Use formats=png,tga"}), 400
 
+    compress = request.args.get("compress", "0") == "1"
+
     results = generate_batch_variants(
-        img, sizes, formats, mode, pack, race, label, original_name=original_name
+        img, sizes, formats, mode, pack, race, label, original_name=original_name, pbr=pbr, compress=compress
     )
+
     return jsonify({"ok": True, "results": results})
 
+# New Endpoint: /validate
+@app.post("/validate")
+def validate_endpoint():
+    img, original_name_or_err = load_image_from_request()
+    if isinstance(original_name_or_err, str) and original_name_or_err.startswith("Failed"):
+        return jsonify({"error": original_name_or_err}), 400
+    if img is None:
+        return jsonify({"error": original_name_or_err}), 400
+
+    issues = []
+    array = np.array(img)
+
+    # Alpha issues
+    if img.mode == 'RGBA':
+        alpha = array[:, :, 3]
+        if np.all(alpha == 255):
+            issues.append("Texture has alpha channel but is fully opaque – consider converting to RGB for optimization.")
+        elif np.any(alpha < 255) and np.mean(alpha[alpha < 255]) < 128:
+            issues.append("Semi-transparent areas detected – ensure engine supports alpha blending.")
+
+    # Seams check (for tileable textures: compare edges)
+    height, width = array.shape[:2]
+    if height > 1 and width > 1:
+        left = array[:, 0, :3]  # RGB
+        right = array[:, -1, :3]
+        if np.mean(np.abs(left - right)) > 20:  # Adjustable threshold
+            issues.append("Potential vertical seam: Left and right edges differ significantly – may not tile seamlessly.")
+
+        top = array[0, :, :3]
+        bottom = array[-1, :, :3]
+        if np.mean(np.abs(top - bottom)) > 20:
+            issues.append("Potential horizontal seam: Top and bottom edges differ significantly – may not tile seamlessly.")
+
+    # Basic artifacts: High variance in edges (compression noise proxy)
+    gray = np.array(img.convert('L'))
+    variance = np.var(gray)
+    if variance > 10000:  # Heuristic; tune based on tests
+        issues.append("High image variance detected – possible compression artifacts or noise; consider smoothing.")
+
+    return jsonify({
+        "ok": len(issues) == 0,
+        "issues": issues,
+        "warnings": [] if issues else ["Texture passes basic validation."]
+    })
 
 if __name__ == "__main__":
     import os
