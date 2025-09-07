@@ -1014,11 +1014,17 @@ def generate_pack():
                 for fmt in batch_results:
                     if fmt != 'pbr':
                         for size_str, info in batch_results[fmt].items():
-                            all_temp_files.append(os.path.join(OUTPUT_DIR, os.path.basename(info['url'])))
+                            if 'url' in info and info['url']:
+                                fname = os.path.basename(info['url'].split('files/')[-1] if 'files/' in info['url'] else info['url'])
+                                all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
+                                logger.debug(f"Added base temp file: {fname} (fmt: {fmt}, size: {size_str})")
                     if 'pbr' in batch_results:
                         for size_str, pbr_maps in batch_results['pbr'].items():
-                            for map_type, info in pbr_maps.items():
-                                all_temp_files.append(os.path.join(OUTPUT_DIR, os.path.basename(info['url'])))
+                            for map_type, map_info in pbr_maps.items():
+                                if 'url' in map_info and map_info['url']:
+                                    fname = os.path.basename(map_info['url'].split('files/')[-1] if 'files/' in map_info['url'] else map_info['url'])
+                                    all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
+                                    logger.debug(f"Added PBR temp file: {fname} (map: {map_type}, size: {size_str})")
 
         results[f"image_{idx+1}"] = variant_results
         statuses[pack_id]['progress'] = int((idx + 1) / len(image_urls) * 100)
