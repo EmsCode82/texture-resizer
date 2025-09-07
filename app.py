@@ -111,6 +111,45 @@ def load_image_from_request():
         return None, "Corrupted or unreadable image from URL"
     except Exception as e:
         logger.error(f"Failed to process image from {url}: {str(e)}")
+        return None, f"Failed to process image from {url}: {str(e)}"    
+
+def load_image_from_url(url):
+    import logging
+    logger = logging.getLogger(__name__)
+    allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+    try:
+        logger.debug(f"Fetching image from URL: {url}")
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content))
+        img.verify()
+        img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
+        width, height = img.size
+        name = os.path.basename(url.split("?")[0])
+        ext = os.path.splitext(name.lower())[1]
+        logger.debug(f"URL file extension: {ext}")
+        if not ext:
+            logger.error("No file extension detected in URL")
+            return None, "No file extension detected in URL"
+        if ext not in allowed_types:
+            logger.error(f"Unsupported URL file type: {ext}")
+            return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
+        if width < 64 or height < 64:
+            logger.error(f"Image too small: {width}x{height}")
+            return None, "Image too small: minimum 64x64"
+        if width > 8192 or height > 8192:
+            logger.error(f"Image too large: {width}x{height}")
+            return None, "Image too large: maximum 8192x8192"
+        logger.debug(f"Image from URL loaded successfully, size: {width}x{height}")
+        return img, name
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to download image from {url}: {str(e)}")
+        return None, f"Failed to download image from {url}: {str(e)}"
+    except PIL.UnidentifiedImageError:
+        logger.error("Corrupted or unreadable image from URL")
+        return None, "Corrupted or unreadable image from URL"
+    except Exception as e:
+        logger.error(f"Failed to process image from {url}: {str(e)}")
         return None, f"Failed to process image from {url}: {str(e)}"
 
 def parse_ratio(r: str):
@@ -918,11 +957,8 @@ def generate_pack():
     file_count = 0
 
     for idx, url in enumerate(image_urls):
-        # Load image (modify request.json for load_image_from_request)
-        original_json = request.json
-        request.json = {'imageUrl': url}
-        img, name_or_err = load_image_from_request()
-        request.json = original_json
+        # Load image from URL directly (no request modification)
+        img, name_or_err = load_image_from_url(url)
         if img is None:
             logger.error(f"Failed to load image {url}: {name_or_err}")
             return jsonify({'error': f'Failed to load image {url}: {name_or_err}'}), 400
