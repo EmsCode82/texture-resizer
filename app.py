@@ -185,68 +185,73 @@ def generate_roughness_map(base_img: Image.Image):
     inverted = ImageOps.invert(gray)
     return inverted.convert('RGB')
 
-def generate_batch_variants(img: Image.Image, sizes, formats, mode,
-                           pack, race, label, original_name=None, pbr=False, compress=False):
-    results = {f: {} for f in formats}
+def process_variant(args):
+    import logging
+    logger = logging.getLogger(__name__)
+    img, size, fmt, mode, pack, race, label, original_name, pbr, compress, host_url = args
+    if mode == "stretch":
+        base_img = img.resize((size, size), Image.Resampling.LANCZOS)
+    elif mode == "crop":
+        scale = max(size / img.width, size / img.height)
+        new_w, new_h = int(img.width * scale), int(img.height * scale)
+        scaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        x1 = (new_w - size) // 2
+        y1 = (new_h - size) // 2
+        base_img = scaled.crop((x1, y1, x1 + size, y1 + size))
+    else:
+        fitted = ImageOps.contain(img, (size, size), Image.Resampling.LANCZOS)
+        base_img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        x = (size - fitted.width) // 2
+        y = (size - fitted.height) // 2
+        base_img.paste(fitted, (x, y))
+
+    fname, path, size_bytes = save_variant(
+        base_img, size, size, fmt,
+        pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
+    )
+    result = {
+        str(size): {
+            "url": f"{host_url.rstrip('/')}/files/{fname}",
+            "bytes": size_bytes,
+            "mb": round(size_bytes / (1024 * 1024), 3),
+        }
+    }
+
     if pbr:
-        results['pbr'] = {}
+        normal_img = generate_normal_map(base_img)
+        roughness_img = generate_roughness_map(base_img)
+        n_fname, n_path, n_bytes = save_variant(
+            normal_img, size, size, "png",
+            pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
+        )
+        r_fname, r_path, r_bytes = save_variant(
+            roughness_img, size, size, "png",
+            pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
+        )
+        result['pbr'] = {
+            str(size): {
+                "normal": {"url": f"{host_url.rstrip('/')}/files/{n_fname}", "bytes": n_bytes, "mb": round(n_bytes / (1024 * 1024), 3)},
+                "roughness": {"url": f"{host_url.rstrip('/')}/files/{r_fname}", "bytes": r_bytes, "mb": round(r_bytes / (1024 * 1024), 3)}
+            }
+        }
+    return fmt, result
 
-    for target in sizes:
-        if mode == "stretch":
-            base_img = img.resize((target, target), Image.Resampling.LANCZOS)
-        elif mode == "crop":
-            scale = max(target / img.width, target / img.height)
-            new_w, new_h = int(img.width * scale), int(img.height * scale)
-            scaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            x1 = (new_w - target) // 2
-            y1 = (new_h - target) // 2
-            base_img = scaled.crop((x1, y1, x1 + target, y1 + target))
+def generate_batch_variants(img, sizes, formats, mode, pack, race, label, original_name=None, pbr=False, compress=False):
+    import logging
+    logger = logging.getLogger(__name__)
+    from multiprocessing import Pool
+    with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
+        args = [(img, size, fmt, mode, pack, race, label, original_name, pbr, compress, request.host_url) for size in sizes for fmt in formats]
+        results = pool.map(process_variant, args)
+    final_results = {f: {} for f in formats}
+    if pbr:
+        final_results['pbr'] = {}
+    for fmt, result in results:
+        if fmt != 'pbr':
+            final_results[fmt].update(result)
         else:
-            fitted = ImageOps.contain(img, (target, target), Image.Resampling.LANCZOS)
-            base_img = Image.new("RGBA", (target, target), (0, 0, 0, 0))
-            x = (target - fitted.width) // 2
-            y = (target - fitted.height) // 2
-            base_img.paste(fitted, (x, y))
-
-        for fmt in formats:
-            fname, _, size_bytes = save_variant(
-                base_img, target, target, fmt,
-                pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
-            )
-            results[fmt][str(target)] = {
-                "url": f"{request.host_url.rstrip('/')}/files/{fname}",
-                "bytes": size_bytes,
-                "mb": round(size_bytes / (1024 * 1024), 3),
-            }
-        
-        if pbr:
-            normal_img = generate_normal_map(base_img)
-            roughness_img = generate_roughness_map(base_img)
-            
-            n_fname, _, n_bytes = save_variant(
-                normal_img, target, target, "png",
-                pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
-            )
-            
-            r_fname, _, r_bytes = save_variant(
-                roughness_img, target, target, "png",
-                pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
-            )
-            
-            results['pbr'][str(target)] = {
-                "normal": {
-                    "url": f"{request.host_url.rstrip('/')}/files/{n_fname}",
-                    "bytes": n_bytes,
-                    "mb": round(n_bytes / (1024 * 1024), 3),
-                },
-                "roughness": {
-                    "url": f"{request.host_url.rstrip('/')}/files/{r_fname}",
-                    "bytes": r_bytes,
-                    "mb": round(r_bytes / (1024 * 1024), 3),
-                }
-            }
-
-    return results
+            final_results['pbr'].update(result['pbr'])
+    return final_results
 
 @app.post("/resize")
 def resize_endpoint():
