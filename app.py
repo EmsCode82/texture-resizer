@@ -21,20 +21,31 @@ def nearest_pow2(n: int) -> int:
     return p
 
 def load_image_from_request():
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("Starting image load from request")
+
     if 'file' in request.files:
         f = request.files['file']
+        logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
         allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
         ext = os.path.splitext(f.filename.lower())[1]
+        logger.debug(f"File extension: {ext}")
         if not ext:
+            logger.error("No file extension detected")
             return None, "No file extension detected"
         if ext not in allowed_types:
+            logger.error(f"Unsupported file type: {ext}")
             return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
         if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
+            logger.error(f"File size {f.content_length} exceeds 10MB limit")
             return None, "File size exceeds 10MB limit"
         try:
             img = Image.open(f.stream).convert('RGBA')
+            logger.debug("Image loaded successfully")
             return img, f.filename
         except Exception as e:
+            logger.error(f"Invalid image file: {str(e)}")
             return None, f"Invalid image file: {str(e)}"
 
     url = None
@@ -43,20 +54,27 @@ def load_image_from_request():
     if not url:
         url = request.form.get('imageUrl')
     if not url:
+        logger.error("No imageUrl or file provided")
         return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
 
     try:
+        logger.debug(f"Fetching image from URL: {url}")
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
         name = os.path.basename(url.split("?")[0])
         ext = os.path.splitext(name.lower())[1]
+        logger.debug(f"URL file extension: {ext}")
         if not ext:
+            logger.error("No file extension detected in URL")
             return None, "No file extension detected in URL"
         if ext not in allowed_types:
+            logger.error(f"Unsupported URL file type: {ext}")
             return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
+        logger.debug("Image from URL loaded successfully")
         return img, name
     except Exception as e:
+        logger.error(f"Failed to download image: {str(e)}")
         return None, f"Failed to download image: {str(e)}"
 
 def parse_ratio(r: str):
