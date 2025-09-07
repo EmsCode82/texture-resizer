@@ -680,6 +680,11 @@ def package_endpoint():
             logger.debug(f"Cleaned up zip on error: {zip_path}")
         return jsonify({"error": f"Failed to serve zip: {e}"}), 500
 
+# Add a static file serving endpoint (unchanged)
+@app.route('/files/<path:filename>')
+def serve_file(filename):
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
+
 if __name__ == "__main__":
     import os
     port = int(os.getenv("PORT", "5000"))
