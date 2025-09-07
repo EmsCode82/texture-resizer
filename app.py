@@ -620,11 +620,11 @@ def package_endpoint():
         return jsonify({"error": original_name_or_err}), 400
     original_name = original_name_or_err
 
-    # Get parameters
+    # Get parameters with pbr defaulting to True
     pack = request.args.get("pack")
     race = request.args.get("race")
     label = request.args.get("label")
-    pbr = request.args.get("pbr", "0") == "1"
+    pbr = request.args.get("pbr", "1") == "1"  # Default to True unless explicitly 0
     compress = request.args.get("compress", "0") == "1"
     
     # Generate variants and store file paths
@@ -642,6 +642,8 @@ def package_endpoint():
                 url = results['pbr'][size][map_type]["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
                 temp_files.append(os.path.join(OUTPUT_DIR, url))
                 logger.debug(f"Added to temp_files: {url} (pbr map: {map_type})")
+    else:
+        logger.debug("No PBR files generated - check generate_batch_variants implementation")
 
     # Create zip
     zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
@@ -657,12 +659,20 @@ def package_endpoint():
         zipf.writestr("README.txt", readme_content)
         logger.debug("README added to zip")
 
-    # Return URL for download
-    download_url = f"{request.host_url}files/{zip_name}"
-    logger.debug(f"Download URL: {download_url}")
-    return jsonify({"message": "Zip created", "download_url": download_url}), 200
+    # Serve the zip directly
+    logger.debug(f"Serving zip: {zip_path}")
+    try:
+        response = send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
+        logger.debug("Zip served successfully")
+        return response
+    except Exception as e:
+        logger.error(f"Failed to serve zip: {e}")
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+            logger.debug(f"Cleaned up zip on error: {zip_path}")
+        return jsonify({"error": f"Failed to serve zip: {e}"}), 500
 
-# Add a static file serving endpoint
+# Add a static file serving endpoint (unchanged)
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
