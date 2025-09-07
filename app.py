@@ -831,8 +831,10 @@ def package_endpoint():
         zip_buffer,
         mimetype='application/zip',
         as_attachment=True,
-        download_name=zip_name
+        download_name=zip_name,
+        conditional=True
     )
+    response.headers['Content-Disposition'] = f'attachment; filename={zip_name}'
     logger.debug("Zip served successfully")
     return response
 
