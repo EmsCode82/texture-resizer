@@ -659,26 +659,29 @@ def package_endpoint():
     # Serve the zip with delayed cleanup
     logger.debug(f"Serving zip: {zip_path}")
     try:
-        def remove_file(path):
+        def remove_file_later(path, delay=5):
+            import time
+            time.sleep(delay)  # Wait longer to ensure download
             if os.path.exists(path):
                 os.remove(path)
                 logger.debug(f"Cleaned up: {path}")
+
         response = send_file(zip_path, as_attachment=True, download_name=zip_name)
         logger.debug("Zip served successfully")
-        # Delay cleanup to allow download (adjust sleep if needed)
-        import time
-        time.sleep(2)  # Wait 2 seconds for client to receive
-        remove_file(zip_path)
+        # Schedule cleanup in a separate thread to avoid blocking
+        import threading
+        threading.Thread(target=remove_file_later, args=(zip_path,), daemon=True).start()
+        # Optional: Clean up individual files later (commented out)
+        # for file_path in temp_files:
+        #     threading.Thread(target=remove_file_later, args=(file_path,), daemon=True).start()
         return response
     except Exception as e:
         logger.error(f"Failed to serve zip: {e}")
+        # Clean up on failure
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+            logger.debug(f"Cleaned up zip on error: {zip_path}")
         return jsonify({"error": f"Failed to serve zip: {e}"}), 500
-    finally:
-        # Ensure cleanup if try fails
-        remove_file(zip_path)
-        # Optional: Clean up individual files (commented out)
-        # for file_path in temp_files:
-        #     remove_file(file_path)
 
 if __name__ == "__main__":
     import os
