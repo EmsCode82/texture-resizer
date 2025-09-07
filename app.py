@@ -242,7 +242,7 @@ def generate_batch_variants(img, sizes, formats, mode, pack, race, label, origin
     logger = logging.getLogger(__name__)
     from multiprocessing import Pool
     with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
-        args = [(img, size, fmt, mode, pack, race, label, original_name, pbr, compress, request.host_url) for size in sizes for fmt in formats]
+        args = [(img, size, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size in sizes for fmt in formats]
         results = pool.map(process_variant, args)
     final_results = {f: {} for f in formats}
     if pbr:
@@ -769,7 +769,7 @@ def package_endpoint():
             continue
         for size in results[fmt]:
             file_info = results[fmt][size]
-            fname = file_info["url"].split("/files/")[-1]  # Extract filename from URL
+            fname = os.path.basename(file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", ""))
             file_path = os.path.join(OUTPUT_DIR, fname)
             temp_files.append(file_path)
             logger.debug(f"Added to temp_files: {file_path} (format: {fmt}, size: {size})")
@@ -778,7 +778,7 @@ def package_endpoint():
         for size in results['pbr']:
             for map_type in ['normal', 'roughness']:
                 file_info = results['pbr'][size][map_type]
-                fname = file_info["url"].split("/files/")[-1]  # Extract filename from URL
+                fname = os.path.basename(file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", ""))
                 file_path = os.path.join(OUTPUT_DIR, fname)
                 temp_files.append(file_path)
                 logger.debug(f"Added to temp_files: {file_path} (pbr map: {map_type}, size: {size})")
@@ -807,6 +807,9 @@ def package_endpoint():
             os.remove(file_path)
             logger.debug(f"Cleaned up: {file_path}")
 
+    if zip_buffer.tell() == 0:
+        logger.error("Zip buffer is empty, no files processed")
+        return jsonify({"error": "Failed to generate zip file"}), 500
     zip_buffer.seek(0)
     zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
     logger.debug(f"Serving zip: {zip_name}")
