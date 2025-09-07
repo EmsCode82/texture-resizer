@@ -612,36 +612,44 @@ def package_endpoint():
     logger = logging.getLogger(__name__)
 
     img, original_name_or_err = load_image_from_request()
-    if isinstance(original_name_or_err, str) and original_name_or_err.startswith("Failed"):
-        logger.error(f"Image load failed: {original_name_or_err}")
-        return jsonify({"error": original_name_or_err}), 400
-    if img is None:
-        logger.error(f"Image load returned None: {original_name_or_err}")
+    if isinstance(original_name_or_err, str):
+        logger.error(f"Validation failed: {original_name_or_err}")
         return jsonify({"error": original_name_or_err}), 400
     original_name = original_name_or_err
 
-    # Get parameters with pbr defaulting to True
+    # Validate parameters
     pack = request.args.get("pack")
     race = request.args.get("race")
     label = request.args.get("label")
-    pbr = request.args.get("pbr", "1") == "1"  # Default to True unless explicitly 0
+    pbr = request.args.get("pbr", "1") == "1"  # Default to True
     compress = request.args.get("compress", "0") == "1"
-    
+    if pack and not re.match(r"^[a-zA-Z0-9_-]+$", pack):
+        return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
+    if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
+        return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
+    if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
+        return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
+
     # Generate variants and store file paths
     logger.debug("Generating batch variants with pbr=%s...", pbr)
     results = generate_batch_variants(img, [512, 1024, 2048, 4096], ["png", "tga"], "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
     temp_files = []
     for fmt in results:
         for size in results[fmt]:
-            url = results[fmt][size]["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
-            temp_files.append(os.path.join(OUTPUT_DIR, url))
-            logger.debug(f"Added to temp_files: {url} (format: {fmt})")
+            # Adjust for potential structure change - use the value directly if it's a path
+            file_path = results[fmt][size]  # Assuming direct path, not a dict
+            if isinstance(file_path, dict) and "url" in file_path:
+                file_path = file_path["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
+            temp_files.append(os.path.join(OUTPUT_DIR, file_path))
+            logger.debug(f"Added to temp_files: {file_path} (format: {fmt})")
     if pbr and 'pbr' in results:
         for size in results['pbr']:
             for map_type in ['normal', 'roughness']:
-                url = results['pbr'][size][map_type]["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
-                temp_files.append(os.path.join(OUTPUT_DIR, url))
-                logger.debug(f"Added to temp_files: {url} (pbr map: {map_type})")
+                file_path = results['pbr'][size][map_type]
+                if isinstance(file_path, dict) and "url" in file_path:
+                    file_path = file_path["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
+                temp_files.append(os.path.join(OUTPUT_DIR, file_path))
+                logger.debug(f"Added to temp_files: {file_path} (pbr map: {map_type})")
     else:
         logger.debug("No PBR files generated - check generate_batch_variants implementation")
 
@@ -671,11 +679,6 @@ def package_endpoint():
             os.remove(zip_path)
             logger.debug(f"Cleaned up zip on error: {zip_path}")
         return jsonify({"error": f"Failed to serve zip: {e}"}), 500
-
-# Add a static file serving endpoint (unchanged)
-@app.route('/files/<path:filename>')
-def serve_file(filename):
-    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
 
 if __name__ == "__main__":
     import os
