@@ -397,19 +397,7 @@ def index():
         <button formaction="/profile/gameasset?pbr=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR</button>
         <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
         <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
-      </div>
-      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
-        <button formaction="/resize?size=512" formmethod="post">Resize to 512</button>
-        <button formaction="/resize?size=1024" formmethod="post">Resize to 1024</button>
-        <button formaction="/resize?size=2048" formmethod="post">Resize to 2048</button>
-        <button formaction="/resize?size=4096" formmethod="post">Resize to 4096</button>
-        <button formaction="/resize?size=pow2" formmethod="post">Resize to POW2</button>
-        <button formaction="/batch" formmethod="post" formtarget="_blank">Batch</button>
-        <button formaction="/profile/gameasset" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack</button>
-        <button formaction="/profile/gameasset?pbr=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR</button>
-        <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
-        <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
-      </div>
+      </div>      
     </form>
 
     <hr style="margin:28px 0;">
