@@ -7,7 +7,8 @@ import numpy as np
 from scipy.ndimage import convolve
 from zipfile import ZipFile, ZIP_DEFLATED
 import multiprocessing
-from PIL import ImageEnhance
+from PIL import Image, UnidentifiedImageError, ImageOps, ImageFilter, ImageEnhance
+import socket
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -106,7 +107,7 @@ def load_image_from_request():
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to download image from {url}: {str(e)}")
         return None, f"Failed to download image from {url}: {str(e)}"
-    except PIL.UnidentifiedImageError:
+    except UnidentifiedImageError:
         logger.error("Corrupted or unreadable image from URL")
         return None, "Corrupted or unreadable image from URL"
     except Exception as e:
@@ -115,19 +116,24 @@ def load_image_from_request():
 
 def load_image_from_url(url):
     import logging
-    import socket  # Add this import if not already at top (add to imports section)
     logger = logging.getLogger(__name__)
     allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
-    original_getaddrinfo = socket.getaddrinfo  # Store original before override
+    original_getaddrinfo = socket.getaddrinfo
+
+    def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        """
+        This is a wrapper for socket.getaddrinfo that forces IPv4 resolution.
+        It takes all the same arguments as the original function but ignores the
+        'family' argument and substitutes socket.AF_INET.
+        """
+        return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+    # Apply the monkey patch
+    socket.getaddrinfo = ipv4_getaddrinfo
+
     try:
         logger.debug(f"Fetching image from URL: {url}")
-        # Force IPv4 resolution to avoid Railway IPv6 issues with Supabase
-        def ipv4_getaddrinfo(*args, **kwargs):
-            kwargs['family'] = socket.AF_INET  # Force IPv4 only
-            return original_getaddrinfo(*args, **kwargs)
-        socket.getaddrinfo = ipv4_getaddrinfo
-
-        resp = requests.get(url, timeout=30)  # Increased timeout for cloud latency
+        resp = requests.get(url, timeout=30)  # Increased for safety
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content))
         img.verify()
@@ -153,14 +159,14 @@ def load_image_from_url(url):
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to download image from {url}: {str(e)}")
         return None, f"Failed to download image from {url}: {str(e)}"
-    except PIL.UnidentifiedImageError:
+    except UnidentifiedImageError:
         logger.error("Corrupted or unreadable image from URL")
         return None, "Corrupted or unreadable image from URL"
     except Exception as e:
         logger.error(f"Failed to process image from {url}: {str(e)}")
         return None, f"Failed to process image from {url}: {str(e)}"
     finally:
-        # Always restore original getaddrinfo to avoid side effects
+        # Restore original to avoid side effects
         socket.getaddrinfo = original_getaddrinfo
 
 def parse_ratio(r: str):
