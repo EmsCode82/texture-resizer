@@ -299,6 +299,8 @@ def process_variant(args):
                 "roughness": {"url": f"{host_url.rstrip('/')}/files/{r_fname}", "bytes": r_bytes, "mb": round(r_bytes / (1024 * 1024), 3)}
             }
         }
+        if pbr:
+            gc.collect()
     return fmt, result
 
 def generate_batch_variants(img, sizes, formats, mode, pack, race, label, original_name=None, pbr=False, compress=False):
@@ -308,6 +310,7 @@ def generate_batch_variants(img, sizes, formats, mode, pack, race, label, origin
     with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
         args = [(img, size, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size in sizes for fmt in formats]
         results = pool.map(process_variant, args)
+        gc.collect()
         if pbr:
             gc.collect()
     final_results = {f: {} for f in formats}
