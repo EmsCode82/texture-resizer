@@ -652,7 +652,6 @@ def package_endpoint():
     logger = logging.getLogger(__name__)
 
     img, original_name_or_err = load_image_from_request()
-    # Fix: Check for error by verifying if img is None
     if img is None:
         logger.error(f"Validation failed: {original_name_or_err}")
         return jsonify({"error": original_name_or_err}), 400
@@ -706,44 +705,35 @@ def package_endpoint():
     temp_files.append(readme_path)
     logger.debug(f"Created README: {readme_path}")
 
-    # Create zip
-    zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
-    zip_path = os.path.join(OUTPUT_DIR, zip_name)
-    logger.debug(f"Creating zip at: {zip_path}")
-    
-    try:
-        with ZipFile(zip_path, 'w', ZIP_DEFLATED) as zipf:
-            for file_path in temp_files:
-                if os.path.exists(file_path):
-                    arcname = os.path.join("Textures" if "_base_" in file_path else "PBR", os.path.basename(file_path)) if file_path != readme_path else "README.txt"
-                    zipf.write(file_path, arcname)
-                    logger.debug(f"Added to zip: {file_path} as {arcname}")
-                else:
-                    logger.warning(f"File not found for zipping: {file_path}")
-        
-        # Serve the zip
-        logger.debug(f"Serving zip: {zip_path}")
-        response = send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
-        logger.debug("Zip served successfully")
-        
-        # Clean up temporary files
+    # Create zip in memory
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
         for file_path in temp_files:
             if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.debug(f"Cleaned up: {file_path}")
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
-            logger.debug(f"Cleaned up zip: {zip_path}")
-        
-        return response
-    except Exception as e:
-        logger.error(f"Failed to create or serve zip: {str(e)}")
-        # Clean up on error
-        for file_path in temp_files + [zip_path]:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.debug(f"Cleaned up on error: {file_path}")
-        return jsonify({"error": f"Failed to create or serve zip: {str(e)}"}), 500
+                arcname = os.path.join("Textures" if "_base_" in file_path else "PBR", os.path.basename(file_path)) if file_path != readme_path else "README.txt"
+                zipf.write(file_path, arcname)
+                logger.debug(f"Added to zip: {file_path} as {arcname}")
+            else:
+                logger.warning(f"File not found for zipping: {file_path}")
+    
+    # Clean up temporary files
+    for file_path in temp_files:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.debug(f"Cleaned up: {file_path}")
+
+    # Serve the zip from memory
+    zip_buffer.seek(0)
+    zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
+    logger.debug(f"Serving zip: {zip_name}")
+    response = send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=zip_name
+    )
+    logger.debug("Zip served successfully")
+    return response
 
 # Add a static file serving endpoint (unchanged)
 @app.route('/files/<path:filename>')
