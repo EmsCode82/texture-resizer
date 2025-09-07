@@ -200,26 +200,41 @@ def size_from_ratio_long(ratio_tuple, long_side):
 def sanitize(s: str) -> str:
     return re.sub(r'[^A-Za-z0-9_\-]+', '-', (s or '').strip())[:60]
 
-def save_variant(img: Image.Image, w: int, h: int, fmt: str,
-                 pack=None, race=None, label=None, original_name=None, suffix="", compress=False):
-    fmt = (fmt or "png").lower()
-    if fmt not in ("png", "tga"):
-        fmt = "png"
-    ext = "tga" if fmt == "tga" else "png"
+def save_variant(img, original_name, size, label='base', file_format='png', pbr_type=None):
+    """
+    Saves an image variant with a unique name incorporating its properties.
+    This version ensures the filename is always unique across all variants and sizes.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        size_str = f"{size[0]}x{size[1]}"
+        
+        # Construct a descriptive, unique filename
+        base_name = os.path.splitext(original_name)[0]
+        pbr_suffix = f"_{pbr_type}" if pbr_type else ""
+        
+        # CRITICAL: The label (e.g., 'earthy') and a unique ID are now part of the filename.
+        # This prevents all name collisions at the source.
+        unique_id = uuid.uuid4().hex[:12]
+        fname = f"{base_name}_{label}{pbr_suffix}_{size_str}_{unique_id}.{file_format}"
 
-    safe_name = sanitize(os.path.splitext(original_name or "")[0])
-    parts = [safe_name, sanitize(pack), sanitize(race), sanitize(label), suffix, f"{w}x{h}"]
-    base = "_".join([x for x in parts if x]) or f"resized_{w}x{h}"
-
-    fname = f"{base}_{uuid.uuid4().hex}.{ext}"
-    path = os.path.join(OUTPUT_DIR, fname)
-
-    if ext == "png" and compress:
-        img.save(path, "PNG", optimize=True)
-    else:
-        img.save(path, "TGA" if ext == "tga" else "PNG")
-    size_bytes = os.path.getsize(path)
-    return fname, path, size_bytes
+        fpath = os.path.join(OUTPUT_DIR, fname)
+        
+        # Handle TGA saving with correct alpha channel detection
+        if file_format == 'tga':
+            if img.mode in ['RGBA', 'LA']:
+                img.save(fpath, format='TGA', tga_24_bpp=False) # 32-bit with alpha
+            else:
+                img.save(fpath, format='TGA', tga_24_bpp=True)  # 24-bit without alpha
+        else: # Default to PNG
+            img.save(fpath, format='PNG')
+            
+        logger.debug(f"Successfully saved variant to {fpath}")
+        return {'status': 'success', 'path': fpath}
+    except Exception as e:
+        logger.error(f"Failed to save variant {original_name} ({label}, {size_str}): {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
 
 def generate_normal_map(base_img: Image.Image):
     gray = base_img.convert('L')
@@ -928,198 +943,103 @@ statuses = {}  # {pack_id: {'status': 'processing', 'progress': 0}}
 def generate_pack():
     import logging
     logger = logging.getLogger(__name__)
-    logger.debug("Processing /generate_pack request")
-
-    # API Key Check (mock for prototype)
+    logger.debug("Processing /generate_pack request")    
     api_key = request.headers.get('X-API-Key')
     if api_key != 'mock_api_key_123':
-        logger.error("Invalid API key")
         return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
 
     if not request.is_json:
-        logger.error("JSON payload required")
         return jsonify({'error': 'JSON payload required'}), 400
 
     data = request.get_json()
     image_urls = data.get('imageUrls', [])
     aspect_ratio = data.get('aspectRatio', '1:1')
-    sizes = data.get('sizes', [512, 1024, 2048, 4096])
+    sizes = data.get('sizes', [512, 1024])
     formats = data.get('formats', ['png'])
-    variants = data.get('variants', {'count': 1, 'type': 'color', 'options': ['default']})
+    variants_data = data.get('variants', {'count': 1, 'options': ['default']})
     pbr_maps = data.get('pbrMaps', False)
-    seamless = data.get('seamless', False)  # Placeholder for Phase E
-    package_name = data.get('packageName', 'default_pack')
+    package_name = data.get('packageName', 'asset-pack')
 
-    # Validate inputs
-    if not image_urls:
-        logger.error("At least one imageUrl required")
-        return jsonify({'error': 'At least one imageUrl required'}), 400
-    if len(package_name) > 50 or not re.match(r"^[a-zA-Z0-9_-]+$", package_name):
-        logger.error("Invalid packageName")
-        return jsonify({'error': 'Invalid packageName. Use alphanumeric, hyphen, or underscore.'}), 400
-    if not all(64 <= s <= 8192 for s in sizes):
-        logger.error("Sizes must be between 64 and 8192")
-        return jsonify({'error': 'Sizes must be between 64 and 8192'}), 400
-    if not all(f in ['png', 'tga'] for f in formats):
-        logger.error("Invalid formats")
-        return jsonify({'error': 'Invalid formats. Use png,tga'}), 400
-    ratio = parse_ratio(aspect_ratio)
-    if not ratio:
-        logger.error("Invalid aspectRatio")
-        return jsonify({'error': 'Invalid aspectRatio. Use A:B (e.g., 16:9)'}), 400
-    if variants.get('count', 1) > 10:
-        logger.error("Too many variants")
-        return jsonify({'error': 'Variants count must not exceed 10'}), 400
-
-    pack_id = str(uuid.uuid4())
-    statuses[pack_id] = {'status': 'processing', 'progress': 0}
-    logger.debug(f"Started pack processing: {pack_id}")
-
-    results = {}
+    if not image_urls: return jsonify({'error': 'At least one imageUrl required'}), 400
+    
     all_temp_files = []
-    file_count = 0
+    file_manifest = []
 
-    for idx, url in enumerate(image_urls):
-        # Load image from URL directly (no request modification)
-        img, name_or_err = load_image_from_url(url)
-        if img is None:
-            logger.error(f"Failed to load image {url}: {name_or_err}")
-            return jsonify({'error': f'Failed to load image {url}: {name_or_err}'}), 400
-        original_name = name_or_err
+    try:
+        for url in image_urls:
+            img, original_name = load_image_from_url(url)
+            if img is None:
+                raise ValueError(f"Failed to load image from URL: {url}")
 
-        # Apply aspect ratio
-        variant_results = {}
-        for var_idx in range(min(variants.get('count', 1), len(variants.get('options', ['default'])))):
-            variant = variants['options'][var_idx] if var_idx < len(variants['options']) else 'default'
-            mod_img = img
+            for variant_name in variants_data.get('options', ['default']):
+                mod_img = img
+                if variant_name == 'earthy': mod_img = ImageEnhance.Color(img).enhance(0.7)
+                elif variant_name == 'vibrant': mod_img = ImageEnhance.Color(img).enhance(1.3)
+                elif variant_name == 'muted': mod_img = ImageEnhance.Color(img).enhance(0.5)
 
-            # Apply color variant
-            if variants.get('type') == 'color':
-                if variant == 'earthy':
-                    mod_img = ImageEnhance.Color(img).enhance(0.7)
-                elif variant == 'vibrant':
-                    mod_img = ImageEnhance.Color(img).enhance(1.2)
-                elif variant == 'muted':
-                    mod_img = ImageEnhance.Color(img).enhance(0.5)
-                elif variant == 'dark':
-                    mod_img = ImageEnhance.Brightness(img).enhance(0.8)
-                elif variant == 'light':
-                    mod_img = ImageEnhance.Brightness(img).enhance(1.2)
+                for size_val in sizes:
+                    resized_img = mod_img.resize((size_val, size_val), Image.LANCZOS)
+                    
+                    for fmt in formats:
+                        result = save_variant(resized_img, original_name, (size_val, size_val), label=variant_name, file_format=fmt)
+                        if result['status'] != 'success':
+                            raise IOError(f"Failed to save base texture: {result.get('message', 'Unknown error')}")
+                        all_temp_files.append(result['path'])
+                        file_manifest.append({'name': os.path.basename(result['path']), 'type': 'Texture', 'variant': variant_name})
 
-            for size in sizes:
-                target_w, target_h = size_from_ratio_long(ratio, size)
-                target_w, target_h = to_pow2(target_w), to_pow2(target_h)  # Enforce power-of-two
-
-                # Generate batch for this variant/size
-                batch_results = generate_batch_variants(
-                    mod_img, [(target_w, target_h)], formats, 'fit', package_name, None, variant, original_name, pbr=pbr_maps, compress=False
-                )
-                variant_results[variant] = batch_results
-                file_count += len(formats) * (1 + 2 if pbr_maps else 0)
-                for fmt in batch_results:
-                    if fmt != 'pbr':
-                        for size_str, info in batch_results[fmt].items():
-                            if 'url' in info and info['url']:
-                                fname = os.path.basename(info['url'].split('files/')[-1] if 'files/' in info['url'] else info['url'])
-                                all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
-                                logger.debug(f"Added base temp file: {fname} (fmt: {fmt}, size: {size_str}, variant: {variant})")
-                    if 'pbr' in batch_results:
-                        for size_str, pbr_maps in batch_results['pbr'].items():
-                            for map_type, map_info in pbr_maps.items():
-                                if 'url' in map_info and map_info['url']:
-                                    fname = os.path.basename(map_info['url'].split('files/')[-1] if 'files/' in map_info['url'] else map_info['url'])
-                                    all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
-                                    logger.debug(f"Added PBR temp file: {fname} (map: {map_type}, size: {size_str}, variant: {variant})")
-
-        results[f"image_{idx+1}"] = variant_results
-        statuses[pack_id]['progress'] = int((idx + 1) / len(image_urls) * 100)
-
-    # Generate preview
-    preview_fname, preview_path, _ = save_variant(
-        img.resize((256, int(256 * ratio[1] / ratio[0]))), 256, int(256 * ratio[1] / ratio[0]), 'png',
-        package_name, None, None, original_name, suffix='preview'
-    )
-    preview_url = f"{request.host_url.rstrip('/')}/files/{preview_fname}"
-    all_temp_files.append(preview_path)
-
-    # Generate ZIP with structured variant folders to prevent name collisions
-    zip_buffer = io.BytesIO()
-    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
-        # Create a set to track archive names and prevent duplicates
-        added_arcnames = set()
-
-        # Get the list of variant options from the request payload
-        variant_options = variants.get('options', ['default'])
-
-        for file_path in all_temp_files:
-            if os.path.exists(file_path):
+                    if pbr_maps:
+                        # Generate PBR maps using existing functions
+                        normal_img = generate_normal_map(resized_img)
+                        roughness_img = generate_roughness_map(resized_img)
+                        pbr_results = {'normal': normal_img, 'roughness': roughness_img}
+                        
+                        for pbr_type, pbr_img in pbr_results.items():
+                            for fmt in formats:
+                                result = save_variant(pbr_img, original_name, (size_val, size_val), label=variant_name, file_format=fmt, pbr_type=pbr_type)
+                                if result['status'] != 'success':
+                                    raise IOError(f"Failed to save PBR map: {result.get('message', 'Unknown error')}")
+                                all_temp_files.append(result['path'])
+                                file_manifest.append({'name': os.path.basename(result['path']), 'type': pbr_type.capitalize(), 'variant': variant_name})
+        
+        zip_buffer = io.BytesIO()
+        with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
+            for file_path in all_temp_files:
                 filename = os.path.basename(file_path)
-                arcname = ""
-
-                # Determine the variant subfolder from the filename
-                variant_subfolder = 'default'  # Fallback default subfolder
-                for v_opt in variant_options:
+                variant_subfolder = 'default'
+                for v_opt in variants_data.get('options', ['default']):
                     if f"_{v_opt}_" in filename:
                         variant_subfolder = v_opt
                         break
                 
-                # Determine the main folder (Textures, PBR, Preview) and construct the final archive name
-                if "_preview_" in filename:
-                    arcname = "Preview/preview.png"
-                elif "_base_" in filename:
-                    # Example: Textures/earthy/generated_..._base_512x512.png
-                    arcname = os.path.join("Textures", variant_subfolder, filename)
-                elif "_normal_" in filename or "_roughness_" in filename:
-                    # Example: PBR/earthy/generated_..._normal_512x512.png
-                    arcname = os.path.join("PBR", variant_subfolder, filename)
-                
-                # Add the file to the zip if the path is valid and not a duplicate
-                if arcname and arcname not in added_arcnames:
-                    zipf.write(file_path, arcname)
-                    added_arcnames.add(arcname)
-                    logger.debug(f"Added to zip: {file_path} as {arcname}")
-                else:
-                    logger.warning(f"Skipping duplicate or unhandled file: {filename} (Arcname: {arcname})")
+                arc_dir = "PBR" if "_normal_" in filename or "_roughness_" in filename else "Textures"
+                arcname = os.path.join(arc_dir, variant_subfolder, filename)
+                zipf.write(file_path, arcname)
+            
+            readme_content = f"Asset Pack: {package_name}\nGenerated by Assetgineer."
+            zipf.writestr("README.txt", readme_content)
 
-        # Add README file to the root of the ZIP
-        readme_content = f"Asset Pack: {package_name}\nGenerated by Assetgineer\nVariants: {', '.join(variant_options)}\nAspect Ratio: {aspect_ratio}\n\nThis pack contains multiple texture variants and their corresponding PBR maps."
-        zipf.writestr("README.txt", readme_content)
+        zip_buffer.seek(0)
+        zip_name = f"pack_{uuid.uuid4().hex[:12]}.zip"
+        with open(os.path.join(OUTPUT_DIR, zip_name), 'wb') as f:
+            f.write(zip_buffer.getvalue())
 
-    for file_path in all_temp_files:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logger.debug(f"Cleaned up: {file_path}")
+        return jsonify({
+            'status': 'success',
+            'zipUrl': f"/files/{zip_name}",
+            'packageName': package_name,
+            'fileCount': len(all_temp_files),
+            'manifest': file_manifest
+        }), 200
 
-    zip_name = f"pack_{pack_id}.zip"
-    zip_url = f"{request.host_url.rstrip('/')}/files/{zip_name}"
-    with open(os.path.join(OUTPUT_DIR, zip_name), 'wb') as f:
-        f.write(zip_buffer.getvalue())
-
-    # Flatten file list
-    file_list = []
-    for img_key, vars in results.items():
-        for var, res in vars.items():
-            for fmt in res:
-                if fmt != 'pbr':
-                    for size_str, info in res[fmt].items():
-                        file_list.append({'name': f"Textures/{var}/{base}_{size_str}_{var}.{fmt}", 'size': size_str, 'format': fmt.upper()})
-                if 'pbr' in res:
-                    for size_str, pbr_maps in res['pbr'].items():
-                        for map_type, info in pbr_maps.items():
-                            file_list.append({'name': f"PBR/{var}/{map_type}_{size_str}_{var}.png", 'size': size_str, 'format': 'PNG'})
-
-    statuses[pack_id] = {'status': 'success', 'progress': 100}
-    total_size_mb = sum(os.path.getsize(f) for f in all_temp_files if os.path.exists(f)) / (1024 * 1024)
-
-    return jsonify({
-        'status': 'success',
-        'packId': pack_id,
-        'zipUrl': zip_url,
-        'previewUrl': preview_url,
-        'fileCount': file_count,
-        'totalSizeMb': round(total_size_mb, 3),
-        'files': file_list
-    })
+    except Exception as e:
+        logger.error(f"Critical error during pack generation: {e}", exc_info=True)
+        return jsonify({'error': f'An internal server error occurred: {e}'}), 500
+    finally:
+        for f in all_temp_files:
+            try:
+                if os.path.exists(f): os.remove(f)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file {f}: {e}")
 
 @app.get("/status/<pack_id>")
 def get_status(pack_id):
