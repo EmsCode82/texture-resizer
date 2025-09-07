@@ -686,6 +686,32 @@ def profile_gameasset():
 
     return jsonify({"ok": True, "results": results})
 
+@app.post("/process")
+def process_request():
+    action = request.form.get("action")
+    if not action:
+        return jsonify({"error": "No action specified"}), 400
+    
+    # Copy form data to args for compatibility with existing endpoints
+    for key in ['pack', 'race', 'label']:
+        value = request.form.get(key)
+        if value:
+            request.args[key] = value
+    
+    # Redirect to the actual endpoint based on action
+    if action.startswith("/resize"):
+        return app.test_request_context(action).invoke(app.view_functions['resize_endpoint'])
+    elif action.startswith("/batch"):
+        return app.test_request_context(action).invoke(app.view_functions['batch'])
+    elif action.startswith("/profile/gameasset"):
+        return app.test_request_context(action).invoke(app.view_functions['profile_gameasset'])
+    elif action.startswith("/validate"):
+        return app.test_request_context(action).invoke(app.view_functions['validate_endpoint'])
+    elif action.startswith("/package"):
+        return app.test_request_context(action).invoke(app.view_functions['package_endpoint'])
+    else:
+        return jsonify({"error": "Invalid action"}), 400
+
 @app.post("/validate")
 def validate_endpoint():
     img, original_name_or_err = load_image_from_request()
