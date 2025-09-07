@@ -628,19 +628,20 @@ def package_endpoint():
     compress = request.args.get("compress", "0") == "1"
     
     # Generate variants and store file paths
-    logger.debug("Generating batch variants...")
+    logger.debug("Generating batch variants with pbr=%s...", pbr)
     results = generate_batch_variants(img, [512, 1024, 2048, 4096], ["png", "tga"], "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
     temp_files = []
     for fmt in results:
         for size in results[fmt]:
             url = results[fmt][size]["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
             temp_files.append(os.path.join(OUTPUT_DIR, url))
+            logger.debug(f"Added to temp_files: {url} (format: {fmt})")
     if pbr and 'pbr' in results:
         for size in results['pbr']:
             for map_type in ['normal', 'roughness']:
                 url = results['pbr'][size][map_type]["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
                 temp_files.append(os.path.join(OUTPUT_DIR, url))
-    logger.debug(f"Generated files: {temp_files}")
+                logger.debug(f"Added to temp_files: {url} (pbr map: {map_type})")
 
     # Create zip
     zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
@@ -665,6 +666,7 @@ def package_endpoint():
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
+
 if __name__ == "__main__":
     import os
     port = int(os.getenv("PORT", "5000"))
