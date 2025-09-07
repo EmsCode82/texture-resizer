@@ -369,7 +369,23 @@ def index():
     return """
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Assetgineer Texture Service</title></head>
+  <head>
+    <meta charset="utf-8">
+    <title>Assetgineer Texture Service</title>
+    <script>
+      function updateFormAction(button) {
+        const form = button.form;
+        const pack = form.querySelector('input[name="pack"]').value;
+        const race = form.querySelector('input[name="race"]').value;
+        const label = form.querySelector('input[name="label"]').value;
+        let action = button.getAttribute('formaction');
+        if (pack) action += (action.includes('?') ? '&' : '?') + 'pack=' + encodeURIComponent(pack);
+        if (race) action += '&race=' + encodeURIComponent(race);
+        if (label) action += '&label=' + encodeURIComponent(label);
+        button.form.action = action;
+      }
+    </script>
+  </head>
   <body style="font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; line-height:1.6;">
     <h1>Assetgineer Texture Service</h1>
 
@@ -381,16 +397,16 @@ def index():
       <p><label>OR Image URL: <input type="url" name="imageUrl" placeholder="https://example.com/image.png" style="width:100%;"></label></p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
-        <button formaction="/resize?size=512&download=1&compress=1">Resize to 512 (Compressed)</button>
-        <button formaction="/resize?size=1024&download=1&compress=1">Resize to 1024 (Compressed)</button>
-        <button formaction="/resize?size=2048&download=1&compress=1">Resize to 2048 (Compressed)</button>
-        <button formaction="/resize?size=4096&download=1&compress=1">Resize to 4096 (Compressed)</button>
-        <button formaction="/resize?size=pow2&download=1&compress=1">Resize to POW2 (Compressed)</button>
-        <button formaction="/batch?compress=1" formmethod="post" formtarget="_blank">Batch (Compressed)</button>
-        <button formaction="/profile/gameasset?compress=1" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (Compressed)</button>
-        <button formaction="/profile/gameasset?pbr=1&compress=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR (Compressed)</button>
-        <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
-        <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
+        <button type="submit" formaction="/resize?size=512&download=1&compress=1" onclick="updateFormAction(this)">Resize to 512 (Compressed)</button>
+        <button type="submit" formaction="/resize?size=1024&download=1&compress=1" onclick="updateFormAction(this)">Resize to 1024 (Compressed)</button>
+        <button type="submit" formaction="/resize?size=2048&download=1&compress=1" onclick="updateFormAction(this)">Resize to 2048 (Compressed)</button>
+        <button type="submit" formaction="/resize?size=4096&download=1&compress=1" onclick="updateFormAction(this)">Resize to 4096 (Compressed)</button>
+        <button type="submit" formaction="/resize?size=pow2&download=1&compress=1" onclick="updateFormAction(this)">Resize to POW2 (Compressed)</button>
+        <button type="submit" formaction="/batch?compress=1" formmethod="post" formtarget="_blank" onclick="updateFormAction(this)">Batch (Compressed)</button>
+        <button type="submit" formaction="/profile/gameasset?compress=1" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;" onclick="updateFormAction(this)">GameAsset Pack (Compressed)</button>
+        <button type="submit" formaction="/profile/gameasset?pbr=1&compress=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;" onclick="updateFormAction(this)">GameAsset Pack with PBR (Compressed)</button>
+        <button type="submit" formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;" onclick="updateFormAction(this)">Validate Image</button>
+        <button type="submit" formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;" onclick="updateFormAction(this)">Download Pack as Zip</button>
       </div>
     </form>
 
