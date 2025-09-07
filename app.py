@@ -248,20 +248,22 @@ def generate_batch_variants(img, sizes, formats, mode, pack, race, label, origin
     import logging
     logger = logging.getLogger(__name__)
     from multiprocessing import Pool
-    # Handle list of scalars or tuples
-    processed_sizes = [size if isinstance(size, tuple) else (size, size) for size in sizes]
-    with Pool(processes=min(multiprocessing.cpu_count() - 1, len(processed_sizes) * len(formats))) as pool:
-        args = [(img, size_tuple, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size_tuple in processed_sizes for fmt in formats]
+    with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
+        args = [(img, size, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size in sizes for fmt in formats]
         results = pool.map(process_variant, args)
     final_results = {f: {} for f in formats}
     pbr_results = {}  # Top-level PBR dict
     if pbr:
-        pbr_results = {str(size): {} for size in processed_sizes}  # Use str((w,h)) or size_str
+        # Initialize with scalar str(size) for compatibility, but update will use actual size_str from result
+        pbr_results = {str(size): {} for size in sizes}
     for fmt, result in results:
         if fmt != 'pbr':
             final_results[fmt].update(result)
         if 'pbr' in result:
-            size_str = list(result.keys())[0]  # Now e.g., "512x256"
+            size_str = list(result.keys())[0]  # e.g., '512x512' or '512x256'
+            # Ensure pbr_results has the key (create if missing for non-square)
+            if size_str not in pbr_results:
+                pbr_results[size_str] = {}
             pbr_results[size_str].update(result['pbr'][size_str])
     if pbr:
         final_results['pbr'] = pbr_results
@@ -779,36 +781,36 @@ def package_endpoint():
     # Extract base files from all formats (png, tga)
     for fmt in ['png', 'tga']:
         if fmt in results:
-            for size_key in results[fmt]:
+            for size_key in results[fmt]:  # e.g., '512x512'
                 file_info = results[fmt][size_key]
                 base_url = file_info.get("url")
                 if base_url:
-                    # Parse fname from URL, handling both /files/ prefix and host_url
-                    if request.host_url:
-                        fname = os.path.basename(base_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
+                    # Robust fname extraction
+                    if 'files/' in base_url:
+                        fname = base_url.split('files/')[-1]
                     else:
-                        fname = os.path.basename(base_url)  # Fallback for local testing
+                        fname = os.path.basename(base_url)
                     file_path = os.path.join(OUTPUT_DIR, fname)
                     if os.path.exists(file_path):
                         temp_files.append(file_path)
-                        logger.debug(f"Added base to temp_files: {file_path} (format: {fmt}, size: {size_key})")
+                        logger.debug(f"Added base: {file_path} (fmt: {fmt}, key: {size_key})")
 
     # Extract PBR from top-level 'pbr' key
     if pbr and 'pbr' in results:
-        for size_key in results['pbr']:  # Now iterates over "512x512" or "512"
+        for size_key in results['pbr']:  # e.g., '512x512'
             for map_type in ['normal', 'roughness']:
                 if map_type in results['pbr'][size_key]:
                     file_info = results['pbr'][size_key][map_type]
                     pbr_url = file_info.get("url")
                     if pbr_url:
-                        if request.host_url:
-                            fname = os.path.basename(pbr_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
+                        if 'files/' in pbr_url:
+                            fname = pbr_url.split('files/')[-1]
                         else:
                             fname = os.path.basename(pbr_url)
                         file_path = os.path.join(OUTPUT_DIR, fname)
                         if os.path.exists(file_path):
                             temp_files.append(file_path)
-                            logger.debug(f"Added PBR to temp_files: {file_path} (map: {map_type}, size: {size_key})")
+                            logger.debug(f"Added PBR: {file_path} (type: {map_type}, key: {size_key})")
     else:
         logger.debug("No PBR generated or 'pbr' key missing")
 
