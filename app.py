@@ -785,9 +785,10 @@ def package_endpoint():
                 if 'pbr' in results['png'][size_str]:
                     pbr_data = results['png'][size_str]['pbr']
                     if size_str in pbr_data:
+                        size_maps = pbr_data[size_str]
                         for map_type in ['normal', 'roughness']:
-                            if map_type in pbr_data[size_str]:
-                                file_info = pbr_data[size_str][map_type]
+                            if map_type in size_maps:
+                                file_info = size_maps[map_type]
                                 pbr_url = file_info.get("url")
                                 if pbr_url:
                                     fname = os.path.basename(pbr_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
