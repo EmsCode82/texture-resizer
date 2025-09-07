@@ -6,6 +6,7 @@ from flask_cors import CORS
 import numpy as np
 from scipy.ndimage import convolve
 from zipfile import ZipFile, ZIP_DEFLATED
+import multiprocessing
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
