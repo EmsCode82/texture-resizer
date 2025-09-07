@@ -3,13 +3,12 @@ from PIL import Image, ImageOps, ImageFilter
 import io, os, uuid, requests
 import re
 from flask_cors import CORS
-import numpy as np  # Added for PBR generation
+import numpy as np
 from scipy.ndimage import convolve
 from zipfile import ZipFile, ZIP_DEFLATED
 
 app = Flask(__name__)
-
-CORS(app, resources={r"/*": {"origins": "*"}}) 
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -21,81 +20,96 @@ def nearest_pow2(n: int) -> int:
     return p
 
 def load_image_from_request():
-         import logging
-         logger = logging.getLogger(__name__)
-         logger.debug("Starting image load from request")
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("Starting image load from request")
 
-         if 'file' in request.files:
-             f = request.files['file']
-             logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
-             allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
-             ext = os.path.splitext(f.filename.lower())[1]
-             logger.debug(f"File extension: {ext}")
-             if not ext:
-                 logger.error("No file extension detected")
-                 return None, "No file extension detected"
-             if ext not in allowed_types:
-                 logger.error(f"Unsupported file type: {ext}")
-                 return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
-             if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
-                 logger.error(f"File size {f.content_length} exceeds 10MB limit")
-                 return None, "File size exceeds 10MB limit"
-             try:
-                 if f.content_length == 0:
-                     logger.warning("File has zero content length, attempting to read stream")
-                     f.stream.seek(0)  # Reset stream position
-                 img = Image.open(f.stream).convert('RGBA')
-                 width, height = img.size
-                 if width < 64 or height < 64:
-                     logger.error(f"Image too small: {width}x{height}")
-                     return None, "Image too small: minimum 64x64"
-                 if width > 8192 or height > 8192:
-                     logger.error(f"Image too large: {width}x{height}")
-                     return None, "Image too large: maximum 8192x8192"
-                 if width == 0 or height == 0:
-                     logger.error("Image has zero dimensions")
-                     return None, "Invalid image: zero dimensions"
-                 logger.debug(f"Image loaded successfully, size: {width}x{height}")
-                 return img, f.filename
-             except Exception as e:
-                 logger.error(f"Invalid image file: {str(e)}")
-                 return None, f"Invalid image file: {str(e)}"
+    if 'file' in request.files:
+        f = request.files['file']
+        logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
+        allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+        ext = os.path.splitext(f.filename.lower())[1]
+        logger.debug(f"File extension: {ext}")
+        if not ext:
+            logger.error("No file extension detected")
+            return None, "No file extension detected"
+        if ext not in allowed_types:
+            logger.error(f"Unsupported file type: {ext}")
+            return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
+        if f.content_length and f.content_length > 10 * 1024 * 1024:
+            size_mb = round(f.content_length / (1024 * 1024), 2)
+            logger.error(f"File size {f.content_length} bytes ({size_mb} MB) exceeds 10MB limit")
+            return None, f"File size ({size_mb} MB) exceeds 10MB limit"
+        try:
+            if f.content_length == 0:
+                logger.warning("File has zero content length, attempting to read stream")
+                f.stream.seek(0)
+            img = Image.open(f.stream)
+            img.verify()
+            f.stream.seek(0)
+            img = Image.open(f.stream).convert('RGBA')
+            width, height = img.size
+            if width < 64 or height < 64:
+                logger.error(f"Image too small: {width}x{height}")
+                return None, "Image too small: minimum 64x64"
+            if width > 8192 or height > 8192:
+                logger.error(f"Image too large: {width}x{height}")
+                return None, "Image too large: maximum 8192x8192"
+            if width == 0 or height == 0:
+                logger.error("Image has zero dimensions")
+                return None, "Invalid image: zero dimensions"
+            logger.debug(f"Image loaded successfully, size: {width}x{height}")
+            return img, f.filename
+        except PIL.UnidentifiedImageError:
+            logger.error("Corrupted or unreadable image file")
+            return None, "Corrupted or unreadable image file"
+        except Exception as e:
+            logger.error(f"Invalid image file: {str(e)}")
+            return None, f"Invalid image file: {str(e)}"
 
-         url = None
-         if request.is_json:
-             url = (request.json or {}).get('imageUrl')
-         if not url:
-             url = request.form.get('imageUrl')
-         if not url:
-             logger.error("No imageUrl or file provided")
-             return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
+    url = None
+    if request.is_json:
+        url = (request.json or {}).get('imageUrl')
+    if not url:
+        url = request.form.get('imageUrl')
+    if not url:
+        logger.error("No imageUrl or file provided")
+        return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
 
-         try:
-             logger.debug(f"Fetching image from URL: {url}")
-             resp = requests.get(url, timeout=20)
-             resp.raise_for_status()
-             img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
-             width, height = img.size
-             name = os.path.basename(url.split("?")[0])
-             ext = os.path.splitext(name.lower())[1]
-             logger.debug(f"URL file extension: {ext}")
-             if not ext:
-                 logger.error("No file extension detected in URL")
-                 return None, "No file extension detected in URL"
-             if ext not in allowed_types:
-                 logger.error(f"Unsupported URL file type: {ext}")
-                 return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
-             if width < 64 or height < 64:
-                 logger.error(f"Image too small: {width}x{height}")
-                 return None, "Image too small: minimum 64x64"
-             if width > 8192 or height > 8192:
-                 logger.error(f"Image too large: {width}x{height}")
-                 return None, "Image too large: maximum 8192x8192"
-             logger.debug(f"Image from URL loaded successfully, size: {width}x{height}")
-             return img, name
-         except Exception as e:
-             logger.error(f"Failed to download image: {str(e)}")
-             return None, f"Failed to download image: {str(e)}"
+    try:
+        logger.debug(f"Fetching image from URL: {url}")
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content))
+        img.verify()
+        img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
+        width, height = img.size
+        name = os.path.basename(url.split("?")[0])
+        ext = os.path.splitext(name.lower())[1]
+        logger.debug(f"URL file extension: {ext}")
+        if not ext:
+            logger.error("No file extension detected in URL")
+            return None, "No file extension detected in URL"
+        if ext not in allowed_types:
+            logger.error(f"Unsupported URL file type: {ext}")
+            return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
+        if width < 64 or height < 64:
+            logger.error(f"Image too small: {width}x{height}")
+            return None, "Image too small: minimum 64x64"
+        if width > 8192 or height > 8192:
+            logger.error(f"Image too large: {width}x{height}")
+            return None, "Image too large: maximum 8192x8192"
+        logger.debug(f"Image from URL loaded successfully, size: {width}x{height}")
+        return img, name
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to download image from {url}: {str(e)}")
+        return None, f"Failed to download image from {url}: {str(e)}"
+    except PIL.UnidentifiedImageError:
+        logger.error("Corrupted or unreadable image from URL")
+        return None, "Corrupted or unreadable image from URL"
+    except Exception as e:
+        logger.error(f"Failed to process image from {url}: {str(e)}")
+        return None, f"Failed to process image from {url}: {str(e)}"
 
 def parse_ratio(r: str):
     parts = r.split(":")
@@ -134,16 +148,13 @@ def save_variant(img: Image.Image, w: int, h: int, fmt: str,
         fmt = "png"
     ext = "tga" if fmt == "tga" else "png"
 
-    # sanitize provided metadata and original filename
     safe_name = sanitize(os.path.splitext(original_name or "")[0])
     parts = [safe_name, sanitize(pack), sanitize(race), sanitize(label), suffix, f"{w}x{h}"]
     base = "_".join([x for x in parts if x]) or f"resized_{w}x{h}"
 
-    # always append unique id to prevent overwriting
     fname = f"{base}_{uuid.uuid4().hex}.{ext}"
     path = os.path.join(OUTPUT_DIR, fname)
 
-    # Save with compression for PNGs
     if ext == "png" and compress:
         img.save(path, "PNG", optimize=True)
     else:
@@ -155,38 +166,32 @@ def generate_normal_map(base_img: Image.Image):
     gray = base_img.convert('L')
     array = np.array(gray, dtype=float)
     
-    # Sobel kernels
     sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
     sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
     
-    # Apply filters with convolution
     dx = convolve(array, sobel_x, mode='constant', cval=0.0)
     dy = convolve(array, sobel_y, mode='constant', cval=0.0)
     
-    # Compute normals (unchanged)
-    dz = np.ones_like(dx) * 10.0  # Strength factor
+    dz = np.ones_like(dx) * 10.0
     normal = np.dstack((-dx, -dy, dz))
     norm = np.linalg.norm(normal, axis=2)[:,:,np.newaxis]
     normal = (normal / norm) * 0.5 + 0.5
     normal = np.clip(normal * 255, 0, 255).astype(np.uint8)
     
-    return Image.fromarray(normal, 'RGB')  # Normals are RGB
+    return Image.fromarray(normal, 'RGB')
 
-# New: Generate roughness map (simple invert grayscale)
 def generate_roughness_map(base_img: Image.Image):
     gray = base_img.convert('L')
     inverted = ImageOps.invert(gray)
-    return inverted.convert('RGB')  # Roughness often grayscale, but RGB for consistency
+    return inverted.convert('RGB')
 
 def generate_batch_variants(img: Image.Image, sizes, formats, mode,
-                            pack, race, label, original_name=None, pbr=False, compress=False):
-    """Builds outputs for multiple sizes/formats (PNG/TGA) and returns the results dict."""
+                           pack, race, label, original_name=None, pbr=False, compress=False):
     results = {f: {} for f in formats}
     if pbr:
-        results['pbr'] = {}  # Sub-dict for PBR maps
+        results['pbr'] = {}
 
     for target in sizes:
-        # Build base square per size (unchanged)
         if mode == "stretch":
             base_img = img.resize((target, target), Image.Resampling.LANCZOS)
         elif mode == "crop":
@@ -196,14 +201,14 @@ def generate_batch_variants(img: Image.Image, sizes, formats, mode,
             x1 = (new_w - target) // 2
             y1 = (new_h - target) // 2
             base_img = scaled.crop((x1, y1, x1 + target, y1 + target))
-        else:  # fit (pad with transparent pixels)
+        else:
             fitted = ImageOps.contain(img, (target, target), Image.Resampling.LANCZOS)
             base_img = Image.new("RGBA", (target, target), (0, 0, 0, 0))
             x = (target - fitted.width) // 2
             y = (target - fitted.height) // 2
             base_img.paste(fitted, (x, y))
 
-        for fmt in formats:  # fmt in {"png","tga"}
+        for fmt in formats:
             fname, _, size_bytes = save_variant(
                 base_img, target, target, fmt,
                 pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
@@ -215,17 +220,14 @@ def generate_batch_variants(img: Image.Image, sizes, formats, mode,
             }
         
         if pbr:
-            # Generate PBR maps from resized base
             normal_img = generate_normal_map(base_img)
             roughness_img = generate_roughness_map(base_img)
             
-            # Save normal (RGB, PNG only for now)
             n_fname, _, n_bytes = save_variant(
                 normal_img, target, target, "png",
                 pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
             )
             
-            # Save roughness (RGB, PNG)
             r_fname, _, r_bytes = save_variant(
                 roughness_img, target, target, "png",
                 pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
@@ -255,27 +257,45 @@ def resize_endpoint():
         return jsonify({"error": original_name_or_err}), 400
     original_name = original_name_or_err
 
-    size_param  = request.args.get("size")
-    download    = request.args.get("download", "0") == "1"
-    width       = request.args.get("width")
-    height      = request.args.get("height")
-    ratio       = request.args.get("ratio")
-    long_       = request.args.get("long")
-    mode        = request.args.get("mode", "fit")
-    pow2        = request.args.get("pow2", "0") == "1"
-    fmt         = (request.args.get("format") or "png").lower()
-    pack        = request.args.get("pack")
-    race        = request.args.get("race")
-    label       = request.args.get("label")
+    size_param = request.args.get("size")
+    download = request.args.get("download", "0") == "1"
+    width = request.args.get("width")
+    height = request.args.get("height")
+    ratio = request.args.get("ratio")
+    long_ = request.args.get("long")
+    mode = request.args.get("mode", "fit")
+    pow2 = request.args.get("pow2", "0") == "1"
+    fmt = (request.args.get("format") or "png").lower()
+    pack = request.args.get("pack")
+    race = request.args.get("race")
+    label = request.args.get("label")
 
     if fmt not in ("png", "tga"):
         return jsonify({"error": "Only png or tga are supported for asset outputs."}), 400
+    if pack and len(pack) > 50:
+        logger.error(f"Pack name too long: {len(pack)} characters")
+        return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
+    if pack and not re.match(r"^[a-zA-Z0-9_-]+$", pack):
+        return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
+    if race and len(race) > 50:
+        logger.error(f"Race name too long: {len(race)} characters")
+        return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
+    if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
+        return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
+    if label and len(label) > 50:
+        logger.error(f"Label too long: {len(label)} characters")
+        return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
+    if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
+        return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
 
     target_w = target_h = None
-    # --- in /resize ---
     if width and height:
         try:
             target_w, target_h = int(width), int(height)
+            if target_w < 64 or target_h < 64:
+                return jsonify({"error": "Width/height must be at least 64."}), 400
+            if target_w > 8192 or target_h > 8192:
+                return jsonify({"error": "Width/height must not exceed 8192."}), 400
         except ValueError:
             return jsonify({"error": "width/height must be integers"}), 400
     elif ratio and long_:
@@ -284,6 +304,8 @@ def resize_endpoint():
             return jsonify({"error": "Invalid ratio. Use ratio=16:9"}), 400
         try:
             long_side = int(long_)
+            if long_side < 64 or long_side > 8192:
+                return jsonify({"error": "Long side must be between 64 and 8192."}), 400
         except ValueError:
             return jsonify({"error": "long must be an integer"}), 400
         target_w, target_h = size_from_ratio_long(rt, long_side)
@@ -294,6 +316,8 @@ def resize_endpoint():
         else:
             try:
                 s = int(size_param)
+                if s < 64 or s > 8192:
+                    return jsonify({"error": "Size must be between 64 and 8192."}), 400
             except ValueError:
                 return jsonify({"error": "size must be an integer or 'pow2'"}), 400
             target_w = target_h = s
@@ -313,7 +337,7 @@ def resize_endpoint():
         x1 = (new_w - target_w) // 2
         y1 = (new_h - target_h) // 2
         out = scaled.crop((x1, y1, x1 + target_w, y1 + target_h))
-    else:  # fit
+    else:
         fitted = ImageOps.contain(img, (target_w, target_h), Image.Resampling.LANCZOS)
         out = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
         x = (target_w - fitted.width) // 2
@@ -338,7 +362,7 @@ def resize_endpoint():
         "format": fmt,
         "file_size_bytes": size_bytes,
         "file_size_mb": round(size_bytes / (1024*1024), 3)
-    })    
+    })
 
 @app.get("/")
 def index():
@@ -528,8 +552,7 @@ def index():
 
 @app.get("/favicon.ico")
 def favicon():
-    return "", 204  # empty response, no error
-
+    return "", 204
 
 @app.get("/files/<path:filename>")
 def files(filename):
@@ -544,18 +567,37 @@ def batch():
         return jsonify({"error": original_name_or_err}), 400
     original_name = original_name_or_err
 
-    sizes_param   = request.args.get("sizes")
+    sizes_param = request.args.get("sizes")
+    pack = request.args.get("pack")
+    race = request.args.get("race")
+    label = request.args.get("label")
     formats_param = request.args.get("formats", "png")
-    mode          = request.args.get("mode", "fit")
-    pow2          = request.args.get("pow2", "0") == "1"
-    pack          = request.args.get("pack")
-    race          = request.args.get("race")
-    label         = request.args.get("label")
-    pbr           = request.args.get("pbr", "0") == "1"  # New: Opt-in PBR
-
+    mode = request.args.get("mode", "fit")
+    pow2 = request.args.get("pow2", "0") == "1"
+    pbr = request.args.get("pbr", "0") == "1"
+    if not pack:
+        logger.error("Pack name is required")
+        return jsonify({"error": "Pack name is required."}), 400
+    if len(pack) > 50:
+        logger.error(f"Pack name too long: {len(pack)} characters")
+        return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
+    if not re.match(r"^[a-zA-Z0-9_-]+$", pack):
+        return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
+    if race and len(race) > 50:
+        logger.error(f"Race name too long: {len(race)} characters")
+        return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
+    if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
+        return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
+    if label and len(label) > 50:
+        logger.error(f"Label too long: {len(label)} characters")
+        return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
+    if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
+        return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
     if sizes_param:
         try:
             sizes = [int(s) for s in sizes_param.split(",") if s.strip()]
+            if not all(64 <= s <= 8192 for s in sizes):
+                return jsonify({"error": "Sizes must be between 64 and 8192."}), 400
         except ValueError:
             return jsonify({"error": "Invalid sizes. Example: sizes=512,1024,2048"}), 400
     else:
@@ -575,7 +617,6 @@ def batch():
 
 @app.post("/profile/gameasset")
 def profile_gameasset():
-    # get image + original name (or an error string)
     img, original_name_or_err = load_image_from_request()
     if isinstance(original_name_or_err, str) and original_name_or_err.startswith("Failed"):
         return jsonify({"error": original_name_or_err}), 400
@@ -583,24 +624,41 @@ def profile_gameasset():
         return jsonify({"error": original_name_or_err}), 400
     original_name = original_name_or_err
 
-    sizes_param   = request.args.get("sizes", "512,1024,2048,4096")
+    sizes_param = request.args.get("sizes", "512,1024,2048,4096")
+    pack = request.args.get("pack")
+    race = request.args.get("race")
+    label = request.args.get("label")
     formats_param = request.args.get("formats", "png,tga")
-    mode          = request.args.get("mode", "fit")
-    pow2          = request.args.get("pow2", "0") == "1"
-    pack          = request.args.get("pack")
-    race          = request.args.get("race")
-    label         = request.args.get("label")
-    pbr           = request.args.get("pbr", "0") == "1"  # New: Opt-in PBR
-
-    # sizes (with validation)
+    mode = request.args.get("mode", "fit")
+    pow2 = request.args.get("pow2", "0") == "1"
+    pbr = request.args.get("pbr", "0") == "1"
+    if not pack:
+        logger.error("Pack name is required")
+        return jsonify({"error": "Pack name is required."}), 400
+    if len(pack) > 50:
+        logger.error(f"Pack name too long: {len(pack)} characters")
+        return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
+    if not re.match(r"^[a-zA-Z0-9_-]+$", pack):
+        return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
+    if race and len(race) > 50:
+        logger.error(f"Race name too long: {len(race)} characters")
+        return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
+    if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
+        return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
+    if label and len(label) > 50:
+        logger.error(f"Label too long: {len(label)} characters")
+        return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
+    if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
+        return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
     try:
         sizes = [int(s) for s in sizes_param.split(",") if s.strip()]
+        if not all(64 <= s <= 8192 for s in sizes):
+            return jsonify({"error": "Sizes must be between 64 and 8192."}), 400
     except ValueError:
         return jsonify({"error": "Invalid sizes. Example: sizes=512,1024,2048"}), 400
     if pow2:
         sizes = [to_pow2(s) for s in sizes]
 
-    # formats (PNG/TGA only, with validation)
     valid_ext = {"png", "tga"}
     formats = [f for f in (s.strip().lower() for s in formats_param.split(",")) if f and f in valid_ext]
     if not formats:
@@ -614,7 +672,6 @@ def profile_gameasset():
 
     return jsonify({"ok": True, "results": results})
 
-# New Endpoint: /validate
 @app.post("/validate")
 def validate_endpoint():
     img, original_name_or_err = load_image_from_request()
@@ -626,32 +683,34 @@ def validate_endpoint():
     issues = []
     array = np.array(img)
 
-    # Alpha issues
     if img.mode == 'RGBA':
         alpha = array[:, :, 3]
         if np.all(alpha == 255):
             issues.append("Texture has alpha channel but is fully opaque – consider converting to RGB for optimization.")
         elif np.any(alpha < 255) and np.mean(alpha[alpha < 255]) < 128:
             issues.append("Semi-transparent areas detected – ensure engine supports alpha blending.")
+        transparent_ratio = np.sum(alpha == 0) / alpha.size
+        if transparent_ratio > 0.9:
+            issues.append("Over 90% of the image is transparent – ensure this is intentional.")
 
-    # Seams check (for tileable textures: compare edges)
     height, width = array.shape[:2]
     if height > 1 and width > 1:
-        left = array[:, 0, :3]  # RGB
+        left = array[:, 0, :3]
         right = array[:, -1, :3]
-        if np.mean(np.abs(left - right)) > 20:  # Adjustable threshold
+        if np.mean(np.abs(left - right)) > 20:
             issues.append("Potential vertical seam: Left and right edges differ significantly – may not tile seamlessly.")
-
         top = array[0, :, :3]
         bottom = array[-1, :, :3]
         if np.mean(np.abs(top - bottom)) > 20:
             issues.append("Potential horizontal seam: Top and bottom edges differ significantly – may not tile seamlessly.")
 
-    # Basic artifacts: High variance in edges (compression noise proxy)
     gray = np.array(img.convert('L'))
     variance = np.var(gray)
-    if variance > 10000:  # Heuristic; tune based on tests
+    if variance > 10000:
         issues.append("High image variance detected – possible compression artifacts or noise; consider smoothing.")
+
+    if img.width != to_pow2(img.width) or img.height != to_pow2(img.height):
+        issues.append("Non-power-of-two dimensions detected – some game engines prefer power-of-two textures.")
 
     return jsonify({
         "ok": len(issues) == 0,
@@ -672,35 +731,43 @@ def package_endpoint():
     original_name = original_name_or_err
     logger.debug(f"Image validated successfully: {original_name}")
 
-    # Validate parameters
     pack = request.args.get("pack")
     race = request.args.get("race")
     label = request.args.get("label")
-    pbr = request.args.get("pbr", "1") == "1"  # Default to True
+    pbr = request.args.get("pbr", "1") == "1"
     compress = request.args.get("compress", "0") == "1"
-    if pack and not re.match(r"^[a-zA-Z0-9_-]+$", pack):
+    if not pack:
+        logger.error("Pack name is required")
+        return jsonify({"error": "Pack name is required."}), 400
+    if len(pack) > 50:
+        logger.error(f"Pack name too long: {len(pack)} characters")
+        return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
+    if not re.match(r"^[a-zA-Z0-9_-]+$", pack):
         return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
+    if race and len(race) > 50:
+        logger.error(f"Race name too long: {len(race)} characters")
+        return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
     if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
         return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
+    if label and len(label) > 50:
+        logger.error(f"Label too long: {len(label)} characters")
+        return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
 
-    # Generate variants and store file paths
     logger.debug(f"Generating batch variants with pbr={pbr}, compress={compress}")
     results = generate_batch_variants(img, [512, 1024, 2048, 4096], ["png", "tga"], "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
     temp_files = []
     
-    # Collect base image paths
     for fmt in results:
         if fmt == 'pbr':
-            continue  # Handle PBR separately
+            continue
         for size in results[fmt]:
             file_info = results[fmt][size]
             file_path = file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
             temp_files.append(os.path.join(OUTPUT_DIR, file_path))
             logger.debug(f"Added to temp_files: {file_path} (format: {fmt}, size: {size})")
     
-    # Collect PBR map paths
     if pbr and 'pbr' in results:
         for size in results['pbr']:
             for map_type in ['normal', 'roughness']:
@@ -711,7 +778,6 @@ def package_endpoint():
     else:
         logger.debug("No PBR files generated")
 
-    # Create README
     readme_content = f"Asset Pack: {original_name}\nGenerated by Assetgineer\nSizes: 512, 1024, 2048, 4096\nFormats: PNG, TGA{' + PBR' if pbr else ''}\nCompression: {'Yes' if compress else 'No'}\nGenerated on: 07/Sep/2025"
     readme_path = os.path.join(OUTPUT_DIR, f"README_{uuid.uuid4().hex}.txt")
     with open(readme_path, 'w') as f:
@@ -719,7 +785,6 @@ def package_endpoint():
     temp_files.append(readme_path)
     logger.debug(f"Created README: {readme_path}")
 
-    # Create zip in memory
     zip_buffer = io.BytesIO()
     with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
         for file_path in temp_files:
@@ -730,13 +795,11 @@ def package_endpoint():
             else:
                 logger.warning(f"File not found for zipping: {file_path}")
     
-    # Clean up temporary files
     for file_path in temp_files:
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Cleaned up: {file_path}")
 
-    # Serve the zip from memory
     zip_buffer.seek(0)
     zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
     logger.debug(f"Serving zip: {zip_name}")
@@ -749,7 +812,6 @@ def package_endpoint():
     logger.debug("Zip served successfully")
     return response
 
-# Add a static file serving endpoint (unchanged)
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
