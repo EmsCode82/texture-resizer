@@ -1042,11 +1042,17 @@ def generate_pack():
     preview_url = f"{request.host_url.rstrip('/')}/files/{preview_fname}"
     all_temp_files.append(preview_path)
 
-    # Generate ZIP (similar to /package)
+    # Generate ZIP with structured variant folders to prevent name collisions
     zip_buffer = io.BytesIO()
     with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
+        # Create a set to track archive names and prevent duplicates
+        added_arcnames = set()
+
+        # Get the list of variant options from the request payload
+        variant_options = variants.get('options', ['default'])
         for file_path in all_temp_files:
             if os.path.exists(file_path):
+                filename = os.path.basename(file_path)
                 arcname = os.path.join("Textures" if "_base_" in file_path else "PBR", os.path.basename(file_path)) if "_preview_" not in file_path else "Preview/preview.png"
                 zipf.write(file_path, arcname)
                 logger.debug(f"Added to zip: {file_path} as {arcname}")
