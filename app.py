@@ -989,29 +989,28 @@ def generate_pack():
 
         # Apply aspect ratio
         variant_results = {}
-        for size in sizes:
-            target_w, target_h = size_from_ratio_long(ratio, size)
-            target_w, target_h = to_pow2(target_w), to_pow2(target_h)  # Enforce power-of-two
+        for var_idx in range(min(variants.get('count', 1), len(variants.get('options', ['default'])))):
+            variant = variants['options'][var_idx] if var_idx < len(variants['options']) else 'default'
+            mod_img = img
 
-            # Process variants
-            for var_idx in range(min(variants.get('count', 1), len(variants.get('options', ['default'])))):
-                variant = variants['options'][var_idx] if var_idx < len(variants['options']) else 'default'
-                mod_img = img
+            # Apply color variant
+            if variants.get('type') == 'color':
+                if variant == 'earthy':
+                    mod_img = ImageEnhance.Color(img).enhance(0.7)
+                elif variant == 'vibrant':
+                    mod_img = ImageEnhance.Color(img).enhance(1.2)
+                elif variant == 'muted':
+                    mod_img = ImageEnhance.Color(img).enhance(0.5)
+                elif variant == 'dark':
+                    mod_img = ImageEnhance.Brightness(img).enhance(0.8)
+                elif variant == 'light':
+                    mod_img = ImageEnhance.Brightness(img).enhance(1.2)
 
-                # Apply color variant
-                if variants.get('type') == 'color':
-                    if variant == 'earthy':
-                        mod_img = ImageEnhance.Color(img).enhance(0.7)
-                    elif variant == 'vibrant':
-                        mod_img = ImageEnhance.Color(img).enhance(1.2)
-                    elif variant == 'muted':
-                        mod_img = ImageEnhance.Color(img).enhance(0.5)
-                    elif variant == 'dark':
-                        mod_img = ImageEnhance.Brightness(img).enhance(0.8)
-                    elif variant == 'light':
-                        mod_img = ImageEnhance.Brightness(img).enhance(1.2)
+            for size in sizes:
+                target_w, target_h = size_from_ratio_long(ratio, size)
+                target_w, target_h = to_pow2(target_w), to_pow2(target_h)  # Enforce power-of-two
 
-                # Generate batch for this variant
+                # Generate batch for this variant/size
                 batch_results = generate_batch_variants(
                     mod_img, [(target_w, target_h)], formats, 'fit', package_name, None, variant, original_name, pbr=pbr_maps, compress=False
                 )
@@ -1023,14 +1022,14 @@ def generate_pack():
                             if 'url' in info and info['url']:
                                 fname = os.path.basename(info['url'].split('files/')[-1] if 'files/' in info['url'] else info['url'])
                                 all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
-                                logger.debug(f"Added base temp file: {fname} (fmt: {fmt}, size: {size_str})")
+                                logger.debug(f"Added base temp file: {fname} (fmt: {fmt}, size: {size_str}, variant: {variant})")
                     if 'pbr' in batch_results:
                         for size_str, pbr_maps in batch_results['pbr'].items():
                             for map_type, map_info in pbr_maps.items():
                                 if 'url' in map_info and map_info['url']:
                                     fname = os.path.basename(map_info['url'].split('files/')[-1] if 'files/' in map_info['url'] else map_info['url'])
                                     all_temp_files.append(os.path.join(OUTPUT_DIR, fname))
-                                    logger.debug(f"Added PBR temp file: {fname} (map: {map_type}, size: {size_str})")
+                                    logger.debug(f"Added PBR temp file: {fname} (map: {map_type}, size: {size_str}, variant: {variant})")
 
         results[f"image_{idx+1}"] = variant_results
         statuses[pack_id]['progress'] = int((idx + 1) / len(image_urls) * 100)
