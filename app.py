@@ -6,7 +6,6 @@ from flask_cors import CORS
 import numpy as np  # Added for PBR generation
 from scipy.ndimage import convolve
 from zipfile import ZipFile, ZIP_DEFLATED
-import datetime
 
 app = Flask(__name__)
 
@@ -22,67 +21,81 @@ def nearest_pow2(n: int) -> int:
     return p
 
 def load_image_from_request():
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.debug("Starting image load from request")
+         import logging
+         logger = logging.getLogger(__name__)
+         logger.debug("Starting image load from request")
 
-    if 'file' in request.files:
-        f = request.files['file']
-        logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
-        allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
-        ext = os.path.splitext(f.filename.lower())[1]
-        logger.debug(f"File extension: {ext}")
-        if not ext:
-            logger.error("No file extension detected")
-            return None, "No file extension detected"
-        if ext not in allowed_types:
-            logger.error(f"Unsupported file type: {ext}")
-            return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
-        if f.content_length and f.content_length > 10 * 1024 * 1024:
-            logger.error(f"File size {f.content_length} exceeds 10MB limit")
-            return None, "File size exceeds 10MB limit"
-        try:
-            if f.content_length == 0:
-                logger.warning("File has zero content length, attempting to read stream")
-                f.stream.seek(0)
-            img = Image.open(f.stream).convert('RGBA')
-            if img.size[0] == 0 or img.size[1] == 0:
-                logger.error("Image has zero dimensions")
-                return None, "Invalid image: zero dimensions"
-            logger.debug(f"Image loaded successfully, size: {img.size}")
-            return img, f.filename
-        except Exception as e:
-            logger.error(f"Invalid image file: {str(e)}")
-            return None, f"Invalid image file: {str(e)}"
+         if 'file' in request.files:
+             f = request.files['file']
+             logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
+             allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+             ext = os.path.splitext(f.filename.lower())[1]
+             logger.debug(f"File extension: {ext}")
+             if not ext:
+                 logger.error("No file extension detected")
+                 return None, "No file extension detected"
+             if ext not in allowed_types:
+                 logger.error(f"Unsupported file type: {ext}")
+                 return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
+             if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
+                 logger.error(f"File size {f.content_length} exceeds 10MB limit")
+                 return None, "File size exceeds 10MB limit"
+             try:
+                 if f.content_length == 0:
+                     logger.warning("File has zero content length, attempting to read stream")
+                     f.stream.seek(0)  # Reset stream position
+                 img = Image.open(f.stream).convert('RGBA')
+                 width, height = img.size
+                 if width < 64 or height < 64:
+                     logger.error(f"Image too small: {width}x{height}")
+                     return None, "Image too small: minimum 64x64"
+                 if width > 8192 or height > 8192:
+                     logger.error(f"Image too large: {width}x{height}")
+                     return None, "Image too large: maximum 8192x8192"
+                 if width == 0 or height == 0:
+                     logger.error("Image has zero dimensions")
+                     return None, "Invalid image: zero dimensions"
+                 logger.debug(f"Image loaded successfully, size: {width}x{height}")
+                 return img, f.filename
+             except Exception as e:
+                 logger.error(f"Invalid image file: {str(e)}")
+                 return None, f"Invalid image file: {str(e)}"
 
-    url = None
-    if request.is_json:
-        url = (request.json or {}).get('imageUrl')
-    if not url:
-        url = request.form.get('imageUrl')
-    if not url:
-        logger.error("No imageUrl or file provided")
-        return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
+         url = None
+         if request.is_json:
+             url = (request.json or {}).get('imageUrl')
+         if not url:
+             url = request.form.get('imageUrl')
+         if not url:
+             logger.error("No imageUrl or file provided")
+             return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
 
-    try:
-        logger.debug(f"Fetching image from URL: {url}")
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
-        name = os.path.basename(url.split("?")[0])
-        ext = os.path.splitext(name.lower())[1]
-        logger.debug(f"URL file extension: {ext}")
-        if not ext:
-            logger.error("No file extension detected in URL")
-            return None, "No file extension detected in URL"
-        if ext not in allowed_types:
-            logger.error(f"Unsupported URL file type: {ext}")
-            return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
-        logger.debug("Image from URL loaded successfully")
-        return img, name
-    except Exception as e:
-        logger.error(f"Failed to download image: {str(e)}")
-        return None, f"Failed to download image: {str(e)}"
+         try:
+             logger.debug(f"Fetching image from URL: {url}")
+             resp = requests.get(url, timeout=20)
+             resp.raise_for_status()
+             img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
+             width, height = img.size
+             name = os.path.basename(url.split("?")[0])
+             ext = os.path.splitext(name.lower())[1]
+             logger.debug(f"URL file extension: {ext}")
+             if not ext:
+                 logger.error("No file extension detected in URL")
+                 return None, "No file extension detected in URL"
+             if ext not in allowed_types:
+                 logger.error(f"Unsupported URL file type: {ext}")
+                 return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
+             if width < 64 or height < 64:
+                 logger.error(f"Image too small: {width}x{height}")
+                 return None, "Image too small: minimum 64x64"
+             if width > 8192 or height > 8192:
+                 logger.error(f"Image too large: {width}x{height}")
+                 return None, "Image too large: maximum 8192x8192"
+             logger.debug(f"Image from URL loaded successfully, size: {width}x{height}")
+             return img, name
+         except Exception as e:
+             logger.error(f"Failed to download image: {str(e)}")
+             return None, f"Failed to download image: {str(e)}"
 
 def parse_ratio(r: str):
     parts = r.split(":")
@@ -111,8 +124,8 @@ def size_from_ratio_long(ratio_tuple, long_side):
         w = round(long_side * a / b)
     return (w, h)
 
-def sanitize(filename):
-    return re.sub(r'[<>:"/\\|?*]', '', filename)
+def sanitize(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_\-]+', '-', (s or '').strip())[:60]
 
 def save_variant(img: Image.Image, w: int, h: int, fmt: str,
                  pack=None, race=None, label=None, original_name=None, suffix="", compress=False):
@@ -165,37 +178,72 @@ def generate_roughness_map(base_img: Image.Image):
     inverted = ImageOps.invert(gray)
     return inverted.convert('RGB')  # Roughness often grayscale, but RGB for consistency
 
-def generate_batch_variants(img, sizes, formats, mode, pack=None, race=None, label=None, original_name=None, pbr=True, compress=False):
-    import logging
-    logger = logging.getLogger(__name__)
-    results = {}
-    for fmt in formats:
-        results[fmt] = {}
-        for size in sizes:
-            resized_img = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS)
-            if compress:
-                resized_img = resized_img.convert('P', colors=256, dither=Image.FLOYDSTEINBERG)
-            unique_id = uuid.uuid4().hex
-            output_filename = f"{original_name}_{'base'}_{size}x{size}_{unique_id}.{fmt}"
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
-            resized_img.save(output_path, format=fmt.upper())
-            results[fmt][size] = output_path
-            logger.debug(f"Generated {output_filename} (format: {fmt}, size: {size})")
+def generate_batch_variants(img: Image.Image, sizes, formats, mode,
+                            pack, race, label, original_name=None, pbr=False, compress=False):
+    """Builds outputs for multiple sizes/formats (PNG/TGA) and returns the results dict."""
+    results = {f: {} for f in formats}
     if pbr:
-        results['pbr'] = {}
-        for size in sizes:
-            base_img = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS).convert('RGB')
-            normal_img = base_img.filter(ImageFilter.FIND_EDGES)
-            normal_img = normal_img.convert('RGB')
-            normal_filename = f"{original_name}_normal_{size}x{size}_{uuid.uuid4().hex}.png"
-            normal_path = os.path.join(OUTPUT_DIR, normal_filename)
-            normal_img.save(normal_path)
-            roughness_img = base_img.convert('L')
-            roughness_filename = f"{original_name}_roughness_{size}x{size}_{uuid.uuid4().hex}.png"
-            roughness_path = os.path.join(OUTPUT_DIR, roughness_filename)
-            roughness_img.save(roughness_path)
-            results['pbr'][size] = {'normal': normal_path, 'roughness': roughness_path}
-            logger.debug(f"Generated PBR maps for size {size}: {normal_filename}, {roughness_filename}")
+        results['pbr'] = {}  # Sub-dict for PBR maps
+
+    for target in sizes:
+        # Build base square per size (unchanged)
+        if mode == "stretch":
+            base_img = img.resize((target, target), Image.Resampling.LANCZOS)
+        elif mode == "crop":
+            scale = max(target / img.width, target / img.height)
+            new_w, new_h = int(img.width * scale), int(img.height * scale)
+            scaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            x1 = (new_w - target) // 2
+            y1 = (new_h - target) // 2
+            base_img = scaled.crop((x1, y1, x1 + target, y1 + target))
+        else:  # fit (pad with transparent pixels)
+            fitted = ImageOps.contain(img, (target, target), Image.Resampling.LANCZOS)
+            base_img = Image.new("RGBA", (target, target), (0, 0, 0, 0))
+            x = (target - fitted.width) // 2
+            y = (target - fitted.height) // 2
+            base_img.paste(fitted, (x, y))
+
+        for fmt in formats:  # fmt in {"png","tga"}
+            fname, _, size_bytes = save_variant(
+                base_img, target, target, fmt,
+                pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
+            )
+            results[fmt][str(target)] = {
+                "url": f"{request.host_url.rstrip('/')}/files/{fname}",
+                "bytes": size_bytes,
+                "mb": round(size_bytes / (1024 * 1024), 3),
+            }
+        
+        if pbr:
+            # Generate PBR maps from resized base
+            normal_img = generate_normal_map(base_img)
+            roughness_img = generate_roughness_map(base_img)
+            
+            # Save normal (RGB, PNG only for now)
+            n_fname, _, n_bytes = save_variant(
+                normal_img, target, target, "png",
+                pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
+            )
+            
+            # Save roughness (RGB, PNG)
+            r_fname, _, r_bytes = save_variant(
+                roughness_img, target, target, "png",
+                pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
+            )
+            
+            results['pbr'][str(target)] = {
+                "normal": {
+                    "url": f"{request.host_url.rstrip('/')}/files/{n_fname}",
+                    "bytes": n_bytes,
+                    "mb": round(n_bytes / (1024 * 1024), 3),
+                },
+                "roughness": {
+                    "url": f"{request.host_url.rstrip('/')}/files/{r_fname}",
+                    "bytes": r_bytes,
+                    "mb": round(r_bytes / (1024 * 1024), 3),
+                }
+            }
+
     return results
 
 @app.post("/resize")
@@ -621,8 +669,9 @@ def package_endpoint():
     if isinstance(original_name_or_err, str):
         logger.error(f"Validation failed: {original_name_or_err}")
         return jsonify({"error": original_name_or_err}), 400
-    original_name = sanitize(os.path.splitext(original_name_or_err)[0])
+    original_name = original_name_or_err
 
+    # Validate parameters
     pack = request.args.get("pack")
     race = request.args.get("race")
     label = request.args.get("label")
@@ -635,22 +684,25 @@ def package_endpoint():
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
 
+    # Generate variants and store file paths
     logger.debug(f"Generating batch variants with pbr={pbr}, compress={compress}")
     results = generate_batch_variants(img, [512, 1024, 2048, 4096], ["png", "tga"], "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
     temp_files = []
     for fmt in results:
-        if fmt == 'pbr':
-            for size in results['pbr']:
-                for map_type in ['normal', 'roughness']:
-                    file_path = results['pbr'][size][map_type]
-                    temp_files.append(file_path)
-                    logger.debug(f"Added to temp_files: {os.path.basename(file_path)} (pbr map: {map_type}, size: {size})")
-        else:
-            for size in results[fmt]:
-                file_path = results[fmt][size]
+        for size in results[fmt]:
+            file_path = results[fmt][size]
+            temp_files.append(file_path)
+            logger.debug(f"Added to temp_files: {os.path.basename(file_path)} (format: {fmt}, size: {size})")
+    if pbr and 'pbr' in results:
+        for size in results['pbr']:
+            for map_type in ['normal', 'roughness']:
+                file_path = results['pbr'][size][map_type]
                 temp_files.append(file_path)
-                logger.debug(f"Added to temp_files: {os.path.basename(file_path)} (format: {fmt}, size: {size})")
+                logger.debug(f"Added to temp_files: {os.path.basename(file_path)} (pbr map: {map_type}, size: {size})")
+    else:
+        logger.debug("No PBR files generated - check generate_batch_variants implementation")
 
+    # Create README
     readme_content = f"Asset Pack: {original_name}\nGenerated by Assetgineer\nSizes: 512, 1024, 2048, 4096\nFormats: PNG, TGA{' + PBR' if pbr else ''}\nCompression: {'Yes' if compress else 'No'}\nGenerated on: {datetime.datetime.now().strftime('%d/%b/%Y')}"
     readme_path = os.path.join(OUTPUT_DIR, f"README_{uuid.uuid4().hex}.txt")
     with open(readme_path, 'w') as f:
@@ -658,39 +710,44 @@ def package_endpoint():
     temp_files.append(readme_path)
     logger.debug(f"Created README: {readme_path}")
 
+    # Create zip in memory
     zip_buffer = io.BytesIO()
     with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
         for file_path in temp_files:
-            if not os.path.exists(file_path):
-                logger.warning(f"File not found for zipping: {file_path}")
-                continue
-            filename = os.path.basename(file_path)
-            if '_base_' in filename:
-                arcname = os.path.join("Textures", filename)
-            elif '_normal_' in filename or '_roughness_' in filename:
-                arcname = os.path.join("PBR", filename)
-            elif filename.startswith("README_"):
-                arcname = "README.txt"
+            if os.path.exists(file_path):
+                if "_base_" in os.path.basename(file_path):
+                    arcname = os.path.join("Textures", os.path.basename(file_path))
+                elif any(map_type in os.path.basename(file_path) for map_type in ['normal', 'roughness']):
+                    arcname = os.path.join("PBR", os.path.basename(file_path))
+                elif file_path == readme_path:
+                    arcname = "README.txt"
+                else:
+                    arcname = os.path.basename(file_path)  # Fallback
+                zipf.write(file_path, arcname)
+                logger.debug(f"Added to zip: {file_path} as {arcname}")
             else:
-                arcname = filename
-            zipf.write(file_path, arcname)
-            logger.debug(f"Added to zip: {file_path} as {arcname}")
+                logger.warning(f"File not found for zipping: {file_path}")
 
+    # Clean up temporary files
     for file_path in temp_files:
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.debug(f"Cleaned up: {file_path}")
 
+    # Serve the zip from memory
     zip_buffer.seek(0)
-    zip_name = f"asset_pack_{original_name}_{uuid.uuid4().hex}.zip"
+    zip_name = f"asset_pack_{sanitize(original_name)}_{uuid.uuid4().hex}.zip"
     logger.debug(f"Serving zip: {zip_name}")
-    return send_file(
+    response = send_file(
         zip_buffer,
         mimetype='application/zip',
         as_attachment=True,
         download_name=zip_name
     )
+    logger.debug("Zip served successfully")
+    return response
 
+# Add a static file serving endpoint (unchanged)
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
