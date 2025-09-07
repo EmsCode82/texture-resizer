@@ -784,6 +784,7 @@ def package_endpoint():
                 size_str = str(size)
                 if 'pbr' in results['png'][size_str]:
                     pbr_data = results['png'][size_str]['pbr']
+                    logger.debug(f"PBR data for {size_str}: {pbr_data}")
                     for map_type in ['normal', 'roughness']:
                         if map_type in pbr_data:
                             file_info = pbr_data[map_type]
