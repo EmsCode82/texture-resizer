@@ -115,11 +115,19 @@ def load_image_from_request():
 
 def load_image_from_url(url):
     import logging
+    import socket  # Add this import if not already at top (add to imports section)
     logger = logging.getLogger(__name__)
     allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+    original_getaddrinfo = socket.getaddrinfo  # Store original before override
     try:
         logger.debug(f"Fetching image from URL: {url}")
-        resp = requests.get(url, timeout=20)
+        # Force IPv4 resolution to avoid Railway IPv6 issues with Supabase
+        def ipv4_getaddrinfo(*args, **kwargs):
+            kwargs['family'] = socket.AF_INET  # Force IPv4 only
+            return original_getaddrinfo(*args, **kwargs)
+        socket.getaddrinfo = ipv4_getaddrinfo
+
+        resp = requests.get(url, timeout=30)  # Increased timeout for cloud latency
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content))
         img.verify()
@@ -151,6 +159,9 @@ def load_image_from_url(url):
     except Exception as e:
         logger.error(f"Failed to process image from {url}: {str(e)}")
         return None, f"Failed to process image from {url}: {str(e)}"
+    finally:
+        # Always restore original getaddrinfo to avoid side effects
+        socket.getaddrinfo = original_getaddrinfo
 
 def parse_ratio(r: str):
     parts = r.split(":")
