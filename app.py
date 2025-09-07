@@ -9,6 +9,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 import multiprocessing
 from PIL import Image, UnidentifiedImageError, ImageOps, ImageFilter, ImageEnhance
 import socket
+import gc
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -307,6 +308,8 @@ def generate_batch_variants(img, sizes, formats, mode, pack, race, label, origin
     with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
         args = [(img, size, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size in sizes for fmt in formats]
         results = pool.map(process_variant, args)
+        if pbr:
+            gc.collect()
     final_results = {f: {} for f in formats}
     pbr_results = {}  # Top-level PBR dict
     if pbr:
