@@ -369,32 +369,28 @@ def index():
     return """
 <!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8">
-    <title>Assetgineer Texture Service</title>
-  </head>
+  <head><meta charset="utf-8"><title>Assetgineer Texture Service</title></head>
   <body style="font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; line-height:1.6;">
     <h1>Assetgineer Texture Service</h1>
 
-    <form method="post" enctype="multipart/form-data" action="/process">
+    <form method="post" enctype="multipart/form-data">
       <p><label>Upload image: <input type="file" name="file" accept=".png,.jpg,.jpeg,.tga" required></label></p>
       <p><label>Pack name: <input type="text" name="pack" required pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
       <p><label>Race (optional): <input type="text" name="race" pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
       <p><label>Label (optional): <input type="text" name="label" pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
       <p><label>OR Image URL: <input type="url" name="imageUrl" placeholder="https://example.com/image.png" style="width:100%;"></label></p>
-      <input type="hidden" name="action" id="action">
 
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
-        <button type="submit" onclick="document.getElementById('action').value='/resize?size=512&download=1&compress=1'">Resize to 512 (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/resize?size=1024&download=1&compress=1'">Resize to 1024 (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/resize?size=2048&download=1&compress=1'">Resize to 2048 (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/resize?size=4096&download=1&compress=1'">Resize to 4096 (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/resize?size=pow2&download=1&compress=1'">Resize to POW2 (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/batch?compress=1'" formtarget="_blank">Batch (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/profile/gameasset?compress=1'" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/profile/gameasset?pbr=1&compress=1'" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR (Compressed)</button>
-        <button type="submit" onclick="document.getElementById('action').value='/validate'" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
-        <button type="submit" onclick="document.getElementById('action').value='/package?pbr=1'" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
+        <button formaction="/resize?size=512&download=1&compress=1">Resize to 512 (Compressed)</button>
+        <button formaction="/resize?size=1024&download=1&compress=1">Resize to 1024 (Compressed)</button>
+        <button formaction="/resize?size=2048&download=1&compress=1">Resize to 2048 (Compressed)</button>
+        <button formaction="/resize?size=4096&download=1&compress=1">Resize to 4096 (Compressed)</button>
+        <button formaction="/resize?size=pow2&download=1&compress=1">Resize to POW2 (Compressed)</button>
+        <button formaction="/batch?compress=1" formmethod="post" formtarget="_blank">Batch (Compressed)</button>
+        <button formaction="/profile/gameasset?compress=1" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (Compressed)</button>
+        <button formaction="/profile/gameasset?pbr=1&compress=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR (Compressed)</button>
+        <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
+        <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
       </div>
     </form>
 
@@ -578,9 +574,9 @@ def batch():
     original_name = original_name_or_err
 
     sizes_param = request.args.get("sizes")
-    pack = request.args.get("pack")
-    race = request.args.get("race")
-    label = request.args.get("label")
+    pack = request.form.get("pack") or request.args.get("pack")
+    race = request.form.get("race") or request.args.get("race")
+    label = request.form.get("label") or request.args.get("label")
     formats_param = request.args.get("formats", "png")
     mode = request.args.get("mode", "fit")
     pow2 = request.args.get("pow2", "0") == "1"
@@ -639,9 +635,9 @@ def profile_gameasset():
     original_name = original_name_or_err
 
     sizes_param = request.args.get("sizes", "512,1024,2048,4096")
-    pack = request.args.get("pack")
-    race = request.args.get("race")
-    label = request.args.get("label")
+    pack = request.form.get("pack") or request.args.get("pack")
+    race = request.form.get("race") or request.args.get("race")
+    label = request.form.get("label") or request.args.get("label")
     formats_param = request.args.get("formats", "png,tga")
     mode = request.args.get("mode", "fit")
     pow2 = request.args.get("pow2", "0") == "1"
@@ -685,32 +681,6 @@ def profile_gameasset():
     )
 
     return jsonify({"ok": True, "results": results})
-
-@app.post("/process")
-def process_request():
-    action = request.form.get("action")
-    if not action:
-        return jsonify({"error": "No action specified"}), 400
-    
-    # Copy form data to args for compatibility with existing endpoints
-    for key in ['pack', 'race', 'label']:
-        value = request.form.get(key)
-        if value:
-            request.args[key] = value
-    
-    # Redirect to the actual endpoint based on action
-    if action.startswith("/resize"):
-        return app.test_request_context(action).invoke(app.view_functions['resize_endpoint'])
-    elif action.startswith("/batch"):
-        return app.test_request_context(action).invoke(app.view_functions['batch'])
-    elif action.startswith("/profile/gameasset"):
-        return app.test_request_context(action).invoke(app.view_functions['profile_gameasset'])
-    elif action.startswith("/validate"):
-        return app.test_request_context(action).invoke(app.view_functions['validate_endpoint'])
-    elif action.startswith("/package"):
-        return app.test_request_context(action).invoke(app.view_functions['package_endpoint'])
-    else:
-        return jsonify({"error": "Invalid action"}), 400
 
 @app.post("/validate")
 def validate_endpoint():
@@ -771,9 +741,9 @@ def package_endpoint():
     original_name = original_name_or_err
     logger.debug(f"Image validated successfully: {original_name}")
 
-    pack = request.args.get("pack")
-    race = request.args.get("race")
-    label = request.args.get("label")
+    pack = request.form.get("pack") or request.args.get("pack")
+    race = request.form.get("race") or request.args.get("race")
+    label = request.form.get("label") or request.args.get("label")
     pbr = request.args.get("pbr", "1") == "1"
     compress = request.args.get("compress", "0") == "1"
     if not pack:
