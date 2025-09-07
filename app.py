@@ -23,8 +23,19 @@ def nearest_pow2(n: int) -> int:
 def load_image_from_request():
     if 'file' in request.files:
         f = request.files['file']
-        img = Image.open(f.stream).convert('RGBA')
-        return img, f.filename  # keep original filename
+        allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+        ext = os.path.splitext(f.filename.lower())[1]
+        if not ext:
+            return None, "No file extension detected"
+        if ext not in allowed_types:
+            return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
+        if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
+            return None, "File size exceeds 10MB limit"
+        try:
+            img = Image.open(f.stream).convert('RGBA')
+            return img, f.filename
+        except Exception as e:
+            return None, f"Invalid image file: {str(e)}"
 
     url = None
     if request.is_json:
@@ -38,10 +49,15 @@ def load_image_from_request():
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
-        name = os.path.basename(url.split("?")[0])  # try to keep original name from URL
+        name = os.path.basename(url.split("?")[0])
+        ext = os.path.splitext(name.lower())[1]
+        if not ext:
+            return None, "No file extension detected in URL"
+        if ext not in allowed_types:
+            return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
         return img, name
     except Exception as e:
-        return None, f"Failed to download image: {e}"
+        return None, f"Failed to download image: {str(e)}"
 
 def parse_ratio(r: str):
     parts = r.split(":")
