@@ -21,67 +21,81 @@ def nearest_pow2(n: int) -> int:
     return p
 
 def load_image_from_request():
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.debug("Starting image load from request")
+         import logging
+         logger = logging.getLogger(__name__)
+         logger.debug("Starting image load from request")
 
-    if 'file' in request.files:
-        f = request.files['file']
-        logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
-        allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
-        ext = os.path.splitext(f.filename.lower())[1]
-        logger.debug(f"File extension: {ext}")
-        if not ext:
-            logger.error("No file extension detected")
-            return None, "No file extension detected"
-        if ext not in allowed_types:
-            logger.error(f"Unsupported file type: {ext}")
-            return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
-        if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
-            logger.error(f"File size {f.content_length} exceeds 10MB limit")
-            return None, "File size exceeds 10MB limit"
-        try:
-            if f.content_length == 0:
-                logger.warning("File has zero content length, attempting to read stream")
-                f.stream.seek(0)  # Reset stream position
-            img = Image.open(f.stream).convert('RGBA')
-            if img.size[0] == 0 or img.size[1] == 0:
-                logger.error("Image has zero dimensions")
-                return None, "Invalid image: zero dimensions"
-            logger.debug(f"Image loaded successfully, size: {img.size}")
-            return img, f.filename
-        except Exception as e:
-            logger.error(f"Invalid image file: {str(e)}")
-            return None, f"Invalid image file: {str(e)}"
+         if 'file' in request.files:
+             f = request.files['file']
+             logger.debug(f"Processing uploaded file: {f.filename}, content_length: {f.content_length}")
+             allowed_types = {'.png', '.jpg', '.jpeg', '.tga'}
+             ext = os.path.splitext(f.filename.lower())[1]
+             logger.debug(f"File extension: {ext}")
+             if not ext:
+                 logger.error("No file extension detected")
+                 return None, "No file extension detected"
+             if ext not in allowed_types:
+                 logger.error(f"Unsupported file type: {ext}")
+                 return None, f"Unsupported file type. Allowed: {', '.join(allowed_types)}"
+             if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
+                 logger.error(f"File size {f.content_length} exceeds 10MB limit")
+                 return None, "File size exceeds 10MB limit"
+             try:
+                 if f.content_length == 0:
+                     logger.warning("File has zero content length, attempting to read stream")
+                     f.stream.seek(0)  # Reset stream position
+                 img = Image.open(f.stream).convert('RGBA')
+                 width, height = img.size
+                 if width < 64 or height < 64:
+                     logger.error(f"Image too small: {width}x{height}")
+                     return None, "Image too small: minimum 64x64"
+                 if width > 8192 or height > 8192:
+                     logger.error(f"Image too large: {width}x{height}")
+                     return None, "Image too large: maximum 8192x8192"
+                 if width == 0 or height == 0:
+                     logger.error("Image has zero dimensions")
+                     return None, "Invalid image: zero dimensions"
+                 logger.debug(f"Image loaded successfully, size: {width}x{height}")
+                 return img, f.filename
+             except Exception as e:
+                 logger.error(f"Invalid image file: {str(e)}")
+                 return None, f"Invalid image file: {str(e)}"
 
-    url = None
-    if request.is_json:
-        url = (request.json or {}).get('imageUrl')
-    if not url:
-        url = request.form.get('imageUrl')
-    if not url:
-        logger.error("No imageUrl or file provided")
-        return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
+         url = None
+         if request.is_json:
+             url = (request.json or {}).get('imageUrl')
+         if not url:
+             url = request.form.get('imageUrl')
+         if not url:
+             logger.error("No imageUrl or file provided")
+             return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
 
-    try:
-        logger.debug(f"Fetching image from URL: {url}")
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
-        name = os.path.basename(url.split("?")[0])
-        ext = os.path.splitext(name.lower())[1]
-        logger.debug(f"URL file extension: {ext}")
-        if not ext:
-            logger.error("No file extension detected in URL")
-            return None, "No file extension detected in URL"
-        if ext not in allowed_types:
-            logger.error(f"Unsupported URL file type: {ext}")
-            return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
-        logger.debug("Image from URL loaded successfully")
-        return img, name
-    except Exception as e:
-        logger.error(f"Failed to download image: {str(e)}")
-        return None, f"Failed to download image: {str(e)}"
+         try:
+             logger.debug(f"Fetching image from URL: {url}")
+             resp = requests.get(url, timeout=20)
+             resp.raise_for_status()
+             img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
+             width, height = img.size
+             name = os.path.basename(url.split("?")[0])
+             ext = os.path.splitext(name.lower())[1]
+             logger.debug(f"URL file extension: {ext}")
+             if not ext:
+                 logger.error("No file extension detected in URL")
+                 return None, "No file extension detected in URL"
+             if ext not in allowed_types:
+                 logger.error(f"Unsupported URL file type: {ext}")
+                 return None, f"Unsupported URL file type. Allowed: {', '.join(allowed_types)}"
+             if width < 64 or height < 64:
+                 logger.error(f"Image too small: {width}x{height}")
+                 return None, "Image too small: minimum 64x64"
+             if width > 8192 or height > 8192:
+                 logger.error(f"Image too large: {width}x{height}")
+                 return None, "Image too large: maximum 8192x8192"
+             logger.debug(f"Image from URL loaded successfully, size: {width}x{height}")
+             return img, name
+         except Exception as e:
+             logger.error(f"Failed to download image: {str(e)}")
+             return None, f"Failed to download image: {str(e)}"
 
 def parse_ratio(r: str):
     parts = r.split(":")
@@ -662,7 +676,7 @@ def package_endpoint():
     pack = request.args.get("pack")
     race = request.args.get("race")
     label = request.args.get("label")
-    pbr = request.args.get("pbr", "1") == "1"  # Default to True
+    pbr = request.args.get("pbr", "1") == "1"
     compress = request.args.get("compress", "0") == "1"
     if pack and not re.match(r"^[a-zA-Z0-9_-]+$", pack):
         return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
@@ -670,16 +684,33 @@ def package_endpoint():
         return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
+    # Additional length validation
+    for param, name in [(pack, "pack"), (race, "race"), (label, "label")]:
+        if param and len(param) > 30:
+            return jsonify({"error": f"{name} too long: max 30 characters"}), 400
+
+    # Validate sizes and formats
+    sizes_param = request.args.get("sizes", "512,1024,2048,4096")
+    try:
+        sizes = [int(s) for s in sizes_param.split(",") if s.strip()]
+        if not all(64 <= s <= 8192 for s in sizes):
+            return jsonify({"error": "Sizes must be between 64 and 8192"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid sizes. Example: sizes=512,1024"}), 400
+    formats_param = request.args.get("formats", "png,tga")
+    formats = [f.strip().lower() for f in formats_param.split(",")]
+    if not all(f in {"png", "tga"} for f in formats):
+        return jsonify({"error": "Formats must be png or tga"}), 400
 
     # Generate variants and store file paths
     logger.debug(f"Generating batch variants with pbr={pbr}, compress={compress}")
-    results = generate_batch_variants(img, [512, 1024, 2048, 4096], ["png", "tga"], "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
+    results = generate_batch_variants(img, sizes, formats, "fit", pack, race, label, original_name, pbr=pbr, compress=compress)
     temp_files = []
     
     # Collect base image paths
     for fmt in results:
         if fmt == 'pbr':
-            continue  # Handle PBR separately
+            continue
         for size in results[fmt]:
             file_info = results[fmt][size]
             file_path = file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
@@ -698,7 +729,7 @@ def package_endpoint():
         logger.debug("No PBR files generated")
 
     # Create README
-    readme_content = f"Asset Pack: {original_name}\nGenerated by Assetgineer\nSizes: 512, 1024, 2048, 4096\nFormats: PNG, TGA{' + PBR' if pbr else ''}\nCompression: {'Yes' if compress else 'No'}\nGenerated on: 07/Sep/2025"
+    readme_content = f"Asset Pack: {original_name}\nGenerated by Assetgineer\nSizes: {','.join(map(str, sizes))}\nFormats: {','.join(formats)}{' + PBR' if pbr else ''}\nCompression: {'Yes' if compress else 'No'}\nGenerated on: 07/Sep/2025"
     readme_path = os.path.join(OUTPUT_DIR, f"README_{uuid.uuid4().hex}.txt")
     with open(readme_path, 'w') as f:
         f.write(readme_content)
