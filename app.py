@@ -7,6 +7,7 @@ import numpy as np
 from scipy.ndimage import convolve
 from zipfile import ZipFile, ZIP_DEFLATED
 import multiprocessing
+from PIL import ImageEnhance
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -190,28 +191,34 @@ def process_variant(args):
     import logging
     logger = logging.getLogger(__name__)
     img, size, fmt, mode, pack, race, label, original_name, pbr, compress, host_url = args
+    # Handle scalar or tuple: if scalar, square; else (w, h)
+    if isinstance(size, tuple):
+        w, h = size
+    else:
+        w = h = size  # Square fallback
     if mode == "stretch":
-        base_img = img.resize((size, size), Image.Resampling.LANCZOS)
+        base_img = img.resize((w, h), Image.Resampling.LANCZOS)
     elif mode == "crop":
-        scale = max(size / img.width, size / img.height)
+        scale = max(w / img.width, h / img.height)
         new_w, new_h = int(img.width * scale), int(img.height * scale)
         scaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        x1 = (new_w - size) // 2
-        y1 = (new_h - size) // 2
-        base_img = scaled.crop((x1, y1, x1 + size, y1 + size))
-    else:
-        fitted = ImageOps.contain(img, (size, size), Image.Resampling.LANCZOS)
-        base_img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        x = (size - fitted.width) // 2
-        y = (size - fitted.height) // 2
+        x1 = (new_w - w) // 2
+        y1 = (new_h - h) // 2
+        base_img = scaled.crop((x1, y1, x1 + w, y1 + h))
+    else:  # fit
+        fitted = ImageOps.contain(img, (w, h), Image.Resampling.LANCZOS)
+        base_img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        x = (w - fitted.width) // 2
+        y = (h - fitted.height) // 2
         base_img.paste(fitted, (x, y))
 
     fname, path, size_bytes = save_variant(
-        base_img, size, size, fmt,
+        base_img, w, h, fmt,  # Pass w, h
         pack=pack, race=race, label=label, original_name=original_name, suffix="base", compress=compress
     )
+    size_str = f"{w}x{h}"
     result = {
-        str(size): {
+        size_str: {
             "url": f"{host_url.rstrip('/')}/files/{fname}",
             "bytes": size_bytes,
             "mb": round(size_bytes / (1024 * 1024), 3),
@@ -222,15 +229,15 @@ def process_variant(args):
         normal_img = generate_normal_map(base_img)
         roughness_img = generate_roughness_map(base_img)
         n_fname, n_path, n_bytes = save_variant(
-            normal_img, size, size, "png",
+            normal_img, w, h, "png",  # Pass w, h
             pack=pack, race=race, label=label, original_name=original_name, suffix="normal", compress=compress
         )
         r_fname, r_path, r_bytes = save_variant(
-            roughness_img, size, size, "png",
+            roughness_img, w, h, "png",  # Pass w, h
             pack=pack, race=race, label=label, original_name=original_name, suffix="roughness", compress=compress
         )
         result['pbr'] = {
-            str(size): {
+            size_str: {  # Use size_str
                 "normal": {"url": f"{host_url.rstrip('/')}/files/{n_fname}", "bytes": n_bytes, "mb": round(n_bytes / (1024 * 1024), 3)},
                 "roughness": {"url": f"{host_url.rstrip('/')}/files/{r_fname}", "bytes": r_bytes, "mb": round(r_bytes / (1024 * 1024), 3)}
             }
@@ -241,18 +248,20 @@ def generate_batch_variants(img, sizes, formats, mode, pack, race, label, origin
     import logging
     logger = logging.getLogger(__name__)
     from multiprocessing import Pool
-    with Pool(processes=min(multiprocessing.cpu_count() - 1, len(sizes) * len(formats))) as pool:
-        args = [(img, size, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size in sizes for fmt in formats]
+    # Handle list of scalars or tuples
+    processed_sizes = [size if isinstance(size, tuple) else (size, size) for size in sizes]
+    with Pool(processes=min(multiprocessing.cpu_count() - 1, len(processed_sizes) * len(formats))) as pool:
+        args = [(img, size_tuple, fmt, mode, pack, race, label, original_name, pbr and fmt == 'png', compress, request.host_url) for size_tuple in processed_sizes for fmt in formats]
         results = pool.map(process_variant, args)
     final_results = {f: {} for f in formats}
     pbr_results = {}  # Top-level PBR dict
     if pbr:
-        pbr_results = {str(size): {} for size in sizes}
+        pbr_results = {str(size): {} for size in processed_sizes}  # Use str((w,h)) or size_str
     for fmt, result in results:
         if fmt != 'pbr':
             final_results[fmt].update(result)
         if 'pbr' in result:
-            size_str = list(result.keys())[0]  # The size key
+            size_str = list(result.keys())[0]  # Now e.g., "512x256"
             pbr_results[size_str].update(result['pbr'][size_str])
     if pbr:
         final_results['pbr'] = pbr_results
@@ -840,6 +849,184 @@ def package_endpoint():
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, download_name=filename)
+
+# In-memory status storage (prototype only; use Redis in production)
+statuses = {}  # {pack_id: {'status': 'processing', 'progress': 0}}
+
+@app.post("/generate_pack")
+def generate_pack():
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("Processing /generate_pack request")
+
+    # API Key Check (mock for prototype)
+    api_key = request.headers.get('X-API-Key')
+    if api_key != 'mock_api_key_123':
+        logger.error("Invalid API key")
+        return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
+
+    if not request.is_json:
+        logger.error("JSON payload required")
+        return jsonify({'error': 'JSON payload required'}), 400
+
+    data = request.get_json()
+    image_urls = data.get('imageUrls', [])
+    aspect_ratio = data.get('aspectRatio', '1:1')
+    sizes = data.get('sizes', [512, 1024, 2048, 4096])
+    formats = data.get('formats', ['png'])
+    variants = data.get('variants', {'count': 1, 'type': 'color', 'options': ['default']})
+    pbr_maps = data.get('pbrMaps', False)
+    seamless = data.get('seamless', False)  # Placeholder for Phase E
+    package_name = data.get('packageName', 'default_pack')
+
+    # Validate inputs
+    if not image_urls:
+        logger.error("At least one imageUrl required")
+        return jsonify({'error': 'At least one imageUrl required'}), 400
+    if len(package_name) > 50 or not re.match(r"^[a-zA-Z0-9_-]+$", package_name):
+        logger.error("Invalid packageName")
+        return jsonify({'error': 'Invalid packageName. Use alphanumeric, hyphen, or underscore.'}), 400
+    if not all(64 <= s <= 8192 for s in sizes):
+        logger.error("Sizes must be between 64 and 8192")
+        return jsonify({'error': 'Sizes must be between 64 and 8192'}), 400
+    if not all(f in ['png', 'tga'] for f in formats):
+        logger.error("Invalid formats")
+        return jsonify({'error': 'Invalid formats. Use png,tga'}), 400
+    ratio = parse_ratio(aspect_ratio)
+    if not ratio:
+        logger.error("Invalid aspectRatio")
+        return jsonify({'error': 'Invalid aspectRatio. Use A:B (e.g., 16:9)'}), 400
+    if variants.get('count', 1) > 10:
+        logger.error("Too many variants")
+        return jsonify({'error': 'Variants count must not exceed 10'}), 400
+
+    pack_id = str(uuid.uuid4())
+    statuses[pack_id] = {'status': 'processing', 'progress': 0}
+    logger.debug(f"Started pack processing: {pack_id}")
+
+    results = {}
+    all_temp_files = []
+    file_count = 0
+
+    for idx, url in enumerate(image_urls):
+        # Load image (modify request.json for load_image_from_request)
+        original_json = request.json
+        request.json = {'imageUrl': url}
+        img, name_or_err = load_image_from_request()
+        request.json = original_json
+        if img is None:
+            logger.error(f"Failed to load image {url}: {name_or_err}")
+            return jsonify({'error': f'Failed to load image {url}: {name_or_err}'}), 400
+        original_name = name_or_err
+
+        # Apply aspect ratio
+        variant_results = {}
+        for size in sizes:
+            target_w, target_h = size_from_ratio_long(ratio, size)
+            target_w, target_h = to_pow2(target_w), to_pow2(target_h)  # Enforce power-of-two
+
+            # Process variants
+            for var_idx in range(min(variants.get('count', 1), len(variants.get('options', ['default'])))):
+                variant = variants['options'][var_idx] if var_idx < len(variants['options']) else 'default'
+                mod_img = img
+
+                # Apply color variant
+                if variants.get('type') == 'color':
+                    if variant == 'earthy':
+                        mod_img = ImageEnhance.Color(img).enhance(0.7)
+                    elif variant == 'vibrant':
+                        mod_img = ImageEnhance.Color(img).enhance(1.2)
+                    elif variant == 'muted':
+                        mod_img = ImageEnhance.Color(img).enhance(0.5)
+                    elif variant == 'dark':
+                        mod_img = ImageEnhance.Brightness(img).enhance(0.8)
+                    elif variant == 'light':
+                        mod_img = ImageEnhance.Brightness(img).enhance(1.2)
+
+                # Generate batch for this variant
+                batch_results = generate_batch_variants(
+                    mod_img, [(target_w, target_h)], formats, 'fit', package_name, None, variant, original_name, pbr=pbr_maps, compress=False
+                )
+                variant_results[variant] = batch_results
+                file_count += len(formats) * (1 + 2 if pbr_maps else 0)
+                for fmt in batch_results:
+                    if fmt != 'pbr':
+                        for size_str, info in batch_results[fmt].items():
+                            all_temp_files.append(os.path.join(OUTPUT_DIR, os.path.basename(info['url'])))
+                    if 'pbr' in batch_results:
+                        for size_str, pbr_maps in batch_results['pbr'].items():
+                            for map_type, info in pbr_maps.items():
+                                all_temp_files.append(os.path.join(OUTPUT_DIR, os.path.basename(info['url'])))
+
+        results[f"image_{idx+1}"] = variant_results
+        statuses[pack_id]['progress'] = int((idx + 1) / len(image_urls) * 100)
+
+    # Generate preview
+    preview_fname, preview_path, _ = save_variant(
+        img.resize((256, int(256 * ratio[1] / ratio[0]))), 256, int(256 * ratio[1] / ratio[0]), 'png',
+        package_name, None, None, original_name, suffix='preview'
+    )
+    preview_url = f"{request.host_url.rstrip('/')}/files/{preview_fname}"
+    all_temp_files.append(preview_path)
+
+    # Generate ZIP (similar to /package)
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
+        for file_path in all_temp_files:
+            if os.path.exists(file_path):
+                arcname = os.path.join("Textures" if "_base_" in file_path else "PBR", os.path.basename(file_path)) if "_preview_" not in file_path else "Preview/preview.png"
+                zipf.write(file_path, arcname)
+                logger.debug(f"Added to zip: {file_path} as {arcname}")
+        readme_content = f"Asset Pack: {package_name}\nGenerated by Assetgineer\nSizes: {','.join(map(str, sizes))}\nFormats: {','.join(formats)}\nVariants: {','.join(variants.get('options', ['default']))}\nPBR: {'Yes' if pbr_maps else 'No'}\nGenerated on: 07/Sep/2025"
+        readme_path = os.path.join(OUTPUT_DIR, f"README_{pack_id}.txt")
+        with open(readme_path, 'w') as f:
+            f.write(readme_content)
+        zipf.write(readme_path, "README.txt")
+        all_temp_files.append(readme_path)
+
+    for file_path in all_temp_files:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.debug(f"Cleaned up: {file_path}")
+
+    zip_name = f"pack_{pack_id}.zip"
+    zip_url = f"{request.host_url.rstrip('/')}/files/{zip_name}"
+    with open(os.path.join(OUTPUT_DIR, zip_name), 'wb') as f:
+        f.write(zip_buffer.getvalue())
+
+    # Flatten file list
+    file_list = []
+    for img_key, vars in results.items():
+        for var, res in vars.items():
+            for fmt in res:
+                if fmt != 'pbr':
+                    for size_str, info in res[fmt].items():
+                        file_list.append({'name': f"Textures/base_{size_str}_{var}.{fmt}", 'size': size_str, 'format': fmt.upper()})
+                if 'pbr' in res:
+                    for size_str, pbr_maps in res['pbr'].items():
+                        for map_type, info in pbr_maps.items():
+                            file_list.append({'name': f"PBR/{map_type}_{size_str}_{var}.png", 'size': size_str, 'format': 'PNG'})
+
+    statuses[pack_id] = {'status': 'success', 'progress': 100}
+    total_size_mb = sum(os.path.getsize(f) for f in all_temp_files if os.path.exists(f)) / (1024 * 1024)
+
+    return jsonify({
+        'status': 'success',
+        'packId': pack_id,
+        'zipUrl': zip_url,
+        'previewUrl': preview_url,
+        'fileCount': file_count,
+        'totalSizeMb': round(total_size_mb, 3),
+        'files': file_list
+    })
+
+@app.get("/status/<pack_id>")
+def get_status(pack_id):
+    import logging
+    logger = logging.getLogger(__name__)
+    status = statuses.get(pack_id, {'status': 'not_found', 'progress': 0})
+    logger.debug(f"Status check for pack_id {pack_id}: {status}")
+    return jsonify(status)
 
 if __name__ == "__main__":
     import os
