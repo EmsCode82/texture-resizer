@@ -279,17 +279,14 @@ def resize_endpoint():
     if fmt not in ("png", "tga"):
         return jsonify({"error": "Only png or tga are supported for asset outputs."}), 400
     if pack and len(pack) > 50:
-        logger.error(f"Pack name too long: {len(pack)} characters")
         return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
     if pack and not re.match(r"^[a-zA-Z0-9_-]+$", pack):
         return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
     if race and len(race) > 50:
-        logger.error(f"Race name too long: {len(race)} characters")
         return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
     if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
         return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
     if label and len(label) > 50:
-        logger.error(f"Label too long: {len(label)} characters")
         return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
@@ -387,14 +384,14 @@ def index():
       <p><label>OR Image URL: <input type="url" name="imageUrl" placeholder="https://example.com/image.png" style="width:100%;"></label></p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
-        <button formaction="/resize?size=512&download=1&compress=1">Resize to 512 (Compressed)</button>
-        <button formaction="/resize?size=1024&download=1&compress=1">Resize to 1024 (Compressed)</button>
-        <button formaction="/resize?size=2048&download=1&compress=1">Resize to 2048 (Compressed)</button>
-        <button formaction="/resize?size=4096&download=1&compress=1">Resize to 4096 (Compressed)</button>
-        <button formaction="/resize?size=pow2&download=1&compress=1">Resize to POW2 (Compressed)</button>
-        <button formaction="/batch?compress=1" formmethod="post" formtarget="_blank">Batch (Compressed)</button>
-        <button formaction="/profile/gameasset?compress=1" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack (Compressed)</button>
-        <button formaction="/profile/gameasset?pbr=1&compress=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR (Compressed)</button>
+        <button formaction="/resize?size=512" formmethod="post">Resize to 512</button>
+        <button formaction="/resize?size=1024" formmethod="post">Resize to 1024</button>
+        <button formaction="/resize?size=2048" formmethod="post">Resize to 2048</button>
+        <button formaction="/resize?size=4096" formmethod="post">Resize to 4096</button>
+        <button formaction="/resize?size=pow2" formmethod="post">Resize to POW2</button>
+        <button formaction="/batch" formmethod="post" formtarget="_blank">Batch</button>
+        <button formaction="/profile/gameasset" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack</button>
+        <button formaction="/profile/gameasset?pbr=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR</button>
         <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
         <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
       </div>
@@ -435,9 +432,9 @@ def index():
     <h3>Example</h3>
     <ol>
     <li>You upload <code>dragon.jpg</code> or <code>dragon.png</code>.</li>
-    <li>You press <b>GameAsset Pack with PBR (Compressed)</b>.</li>
+    <li>You press <b>GameAsset Pack with PBR</b>.</li>
     <li>You instantly get 4 versions: 512, 1024, 2048, and 4096.</li>
-    <li>Each version includes compressed base PNG/TGA plus normal and roughness maps, with direct download links.</li>
+    <li>Each version includes base PNG/TGA plus normal and roughness maps, with direct download links.</li>
     <li>Press <b>Validate Image</b> to check for issues like seams or noise.</li>
     </ol>
 
@@ -588,20 +585,16 @@ def batch():
     pow2 = request.args.get("pow2", "0") == "1"
     pbr = request.args.get("pbr", "0") == "1"
     if not pack:
-        logger.error("Pack name is required")
         return jsonify({"error": "Pack name is required."}), 400
     if len(pack) > 50:
-        logger.error(f"Pack name too long: {len(pack)} characters")
         return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
     if not re.match(r"^[a-zA-Z0-9_-]+$", pack):
         return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
     if race and len(race) > 50:
-        logger.error(f"Race name too long: {len(race)} characters")
         return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
     if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
         return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
     if label and len(label) > 50:
-        logger.error(f"Label too long: {len(label)} characters")
         return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
@@ -649,20 +642,16 @@ def profile_gameasset():
     pow2 = request.args.get("pow2", "0") == "1"
     pbr = request.args.get("pbr", "0") == "1"
     if not pack:
-        logger.error("Pack name is required")
         return jsonify({"error": "Pack name is required."}), 400
     if len(pack) > 50:
-        logger.error(f"Pack name too long: {len(pack)} characters")
         return jsonify({"error": f"Pack name exceeds 50 characters: {len(pack)}."}), 400
     if not re.match(r"^[a-zA-Z0-9_-]+$", pack):
         return jsonify({"error": "Invalid pack name. Use alphanumeric, hyphen, or underscore."}), 400
     if race and len(race) > 50:
-        logger.error(f"Race name too long: {len(race)} characters")
         return jsonify({"error": f"Race name exceeds 50 characters: {len(race)}."}), 400
     if race and not re.match(r"^[a-zA-Z0-9_-]+$", race):
         return jsonify({"error": "Invalid race name. Use alphanumeric, hyphen, or underscore."}), 400
     if label and len(label) > 50:
-        logger.error(f"Label too long: {len(label)} characters")
         return jsonify({"error": f"Label exceeds 50 characters: {len(label)}."}), 400
     if label and not re.match(r"^[a-zA-Z0-9_-]+$", label):
         return jsonify({"error": "Invalid label. Use alphanumeric, hyphen, or underscore."}), 400
@@ -780,16 +769,18 @@ def package_endpoint():
             continue
         for size in results[fmt]:
             file_info = results[fmt][size]
-            file_path = file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
-            temp_files.append(os.path.join(OUTPUT_DIR, file_path))
+            fname = file_info["url"].split("/files/")[-1]  # Extract filename from URL
+            file_path = os.path.join(OUTPUT_DIR, fname)
+            temp_files.append(file_path)
             logger.debug(f"Added to temp_files: {file_path} (format: {fmt}, size: {size})")
     
     if pbr and 'pbr' in results:
         for size in results['pbr']:
             for map_type in ['normal', 'roughness']:
                 file_info = results['pbr'][size][map_type]
-                file_path = file_info["url"].replace(f"{request.host_url.rstrip('/')}/files/", "")
-                temp_files.append(os.path.join(OUTPUT_DIR, file_path))
+                fname = file_info["url"].split("/files/")[-1]  # Extract filename from URL
+                file_path = os.path.join(OUTPUT_DIR, fname)
+                temp_files.append(file_path)
                 logger.debug(f"Added to temp_files: {file_path} (pbr map: {map_type}, size: {size})")
     else:
         logger.debug("No PBR files generated")
