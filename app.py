@@ -40,9 +40,16 @@ def load_image_from_request():
         if f.content_length and f.content_length > 10 * 1024 * 1024:  # 10MB limit
             logger.error(f"File size {f.content_length} exceeds 10MB limit")
             return None, "File size exceeds 10MB limit"
+        if f.content_length == 0:
+            logger.error("File has zero content length")
+            return None, "Uploaded file is empty"
         try:
             img = Image.open(f.stream).convert('RGBA')
-            logger.debug("Image loaded successfully")
+            # Verify image has content
+            if img.size[0] == 0 or img.size[1] == 0:
+                logger.error("Image has zero dimensions")
+                return None, "Invalid image: zero dimensions"
+            logger.debug(f"Image loaded successfully, size: {img.size}")
             return img, f.filename
         except Exception as e:
             logger.error(f"Invalid image file: {str(e)}")
