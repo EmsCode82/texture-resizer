@@ -560,6 +560,10 @@ def files(filename):
 
 @app.post("/batch")
 def batch():
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
+
     img, original_name_or_err = load_image_from_request()
     if isinstance(original_name_or_err, str) and original_name_or_err.startswith("Failed"):
         return jsonify({"error": original_name_or_err}), 400
@@ -617,6 +621,10 @@ def batch():
 
 @app.post("/profile/gameasset")
 def profile_gameasset():
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
+
     img, original_name_or_err = load_image_from_request()
     if isinstance(original_name_or_err, str) and original_name_or_err.startswith("Failed"):
         return jsonify({"error": original_name_or_err}), 400
