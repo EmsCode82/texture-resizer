@@ -659,16 +659,16 @@ def package_endpoint():
     # Serve the zip with delayed cleanup
     logger.debug(f"Serving zip: {zip_path}")
     try:
-        def remove_file_later(path, delay=5):
+        def remove_file_later(path, delay=10):  # Increased delay to 10 seconds
             import time
             time.sleep(delay)  # Wait longer to ensure download
             if os.path.exists(path):
                 os.remove(path)
                 logger.debug(f"Cleaned up: {path}")
 
-        response = send_file(zip_path, as_attachment=True, download_name=zip_name)
+        response = send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
         logger.debug("Zip served successfully")
-        # Schedule cleanup in a separate thread to avoid blocking
+        # Schedule cleanup in a separate thread
         import threading
         threading.Thread(target=remove_file_later, args=(zip_path,), daemon=True).start()
         # Optional: Clean up individual files later (commented out)
