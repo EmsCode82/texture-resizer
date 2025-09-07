@@ -784,8 +784,8 @@ def package_endpoint():
                 if 'pbr' in results['png'][size]:
                     pbr_data = results['png'][size]['pbr']
                     for map_type in ['normal', 'roughness']:
-                        if map_type in pbr_data and str(size) in pbr_data[map_type]:
-                            file_info = pbr_data[map_type][str(size)]
+                        if map_type in pbr_data:
+                            file_info = pbr_data[map_type]  # Direct access: pbr_data[map_type] is the dict for this size/map
                             pbr_url = file_info.get("url")
                             if pbr_url:
                                 fname = os.path.basename(pbr_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
