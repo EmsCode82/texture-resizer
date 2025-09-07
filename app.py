@@ -41,19 +41,29 @@ def load_image_from_request():
             logger.error(f"File size {f.content_length} exceeds 10MB limit")
             return None, "File size exceeds 10MB limit"
         if f.content_length == 0:
-            logger.error("File has zero content length")
-            return None, "Uploaded file is empty"
-        try:
-            img = Image.open(f.stream).convert('RGBA')
-            # Verify image has content
-            if img.size[0] == 0 or img.size[1] == 0:
-                logger.error("Image has zero dimensions")
-                return None, "Invalid image: zero dimensions"
-            logger.debug(f"Image loaded successfully, size: {img.size}")
-            return img, f.filename
-        except Exception as e:
-            logger.error(f"Invalid image file: {str(e)}")
-            return None, f"Invalid image file: {str(e)}"
+            logger.warning("File has zero content length, attempting to read stream")
+            try:
+                f.stream.seek(0)  # Reset stream position
+                img = Image.open(f.stream).convert('RGBA')
+                if img.size[0] == 0 or img.size[1] == 0:
+                    logger.error("Image has zero dimensions after stream reset")
+                    return None, "Invalid image: zero dimensions"
+                logger.debug(f"Image loaded successfully after stream reset, size: {img.size}")
+                return img, f.filename
+            except Exception as e:
+                logger.error(f"Invalid image file after stream reset: {str(e)}")
+                return None, f"Invalid image file: {str(e)}"
+        else:
+            try:
+                img = Image.open(f.stream).convert('RGBA')
+                if img.size[0] == 0 or img.size[1] == 0:
+                    logger.error("Image has zero dimensions")
+                    return None, "Invalid image: zero dimensions"
+                logger.debug(f"Image loaded successfully, size: {img.size}")
+                return img, f.filename
+            except Exception as e:
+                logger.error(f"Invalid image file: {str(e)}")
+                return None, f"Invalid image file: {str(e)}"
 
     url = None
     if request.is_json:
