@@ -656,28 +656,14 @@ def package_endpoint():
         zipf.writestr("README.txt", readme_content)
         logger.debug("README added to zip")
 
-    # Serve the zip with delayed cleanup
+    # Serve the zip without immediate cleanup
     logger.debug(f"Serving zip: {zip_path}")
     try:
-        def remove_file_later(path, delay=10):  # Increased delay to 10 seconds
-            import time
-            time.sleep(delay)  # Wait longer to ensure download
-            if os.path.exists(path):
-                os.remove(path)
-                logger.debug(f"Cleaned up: {path}")
-
         response = send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
         logger.debug("Zip served successfully")
-        # Schedule cleanup in a separate thread
-        import threading
-        threading.Thread(target=remove_file_later, args=(zip_path,), daemon=True).start()
-        # Optional: Clean up individual files later (commented out)
-        # for file_path in temp_files:
-        #     threading.Thread(target=remove_file_later, args=(file_path,), daemon=True).start()
         return response
     except Exception as e:
         logger.error(f"Failed to serve zip: {e}")
-        # Clean up on failure
         if os.path.exists(zip_path):
             os.remove(zip_path)
             logger.debug(f"Cleaned up zip on error: {zip_path}")
