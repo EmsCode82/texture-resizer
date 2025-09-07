@@ -784,17 +784,16 @@ def package_endpoint():
                 size_str = str(size)
                 if 'pbr' in results['png'][size_str]:
                     pbr_data = results['png'][size_str]['pbr']
-                    if size_str in pbr_data:
-                        for map_type in ['normal', 'roughness']:
-                            if map_type in pbr_data[size_str]:
-                                file_info = pbr_data[size_str][map_type]
-                                pbr_url = file_info.get("url")
-                                if pbr_url:
-                                    fname = os.path.basename(pbr_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
-                                    file_path = os.path.join(OUTPUT_DIR, fname)
-                                    if os.path.exists(file_path):
-                                        temp_files.append(file_path)
-                                        logger.debug(f"Added PBR to temp_files: {file_path} (map: {map_type}, size: {size})")
+                    for map_type in ['normal', 'roughness']:
+                        if map_type in pbr_data:
+                            file_info = pbr_data[map_type]
+                            pbr_url = file_info.get("url")
+                            if pbr_url:
+                                fname = os.path.basename(pbr_url.replace(f"{request.host_url.rstrip('/')}/files/", ""))
+                                file_path = os.path.join(OUTPUT_DIR, fname)
+                                if os.path.exists(file_path):
+                                    temp_files.append(file_path)
+                                    logger.debug(f"Added PBR to temp_files: {file_path} (map: {map_type}, size: {size})")
         else:
             logger.debug("No PBR generated (png not in results)")
 
