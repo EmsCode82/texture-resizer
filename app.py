@@ -233,7 +233,8 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
 
 @app.post("/generate_pack")
 def generate_pack():
-    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals."""
+    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals.
+       NOW honors variants sent from frontend: { "variants": { "options": [...] } }"""
     logger = logging.getLogger(__name__)
     logger.info("Received request for /generate_pack")
 
@@ -244,7 +245,7 @@ def generate_pack():
     if not request.is_json:
         return jsonify({'error': 'JSON payload required'}), 400
 
-    # --- Payload parsing (keeps your existing fields + new toggles) ---
+    # --- Payload parsing ---
     data = request.get_json(force=True)
     image_urls   = data.get('imageUrls', [])
     package_name = data.get('packageName', f"pack_{uuid.uuid4().hex[:6]}")
@@ -258,10 +259,20 @@ def generate_pack():
 
     # Optional dilation for Base and Roughness
     dilate_base               = bool(data.get('dilateBase', False))
-    base_edge_padding_px      = int(data.get('baseEdgePadding', edge_padding_px))  # default to normal padding
-
+    base_edge_padding_px      = int(data.get('baseEdgePadding', edge_padding_px))
     dilate_roughness          = bool(data.get('dilateRoughness', False))
     roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
+
+    # --- NEW: parse selected variants from payload; fall back to your default set ---
+    available_variants = set(variants_data.get('options', ['default']))
+    requested_variants = data.get('variants', {}).get('options', None)
+    if isinstance(requested_variants, list):
+        selected_variant_names = [v for v in requested_variants if v in available_variants]
+        if not selected_variant_names:
+            logger.info("No valid variants in payload; falling back to defaults.")
+            selected_variant_names = list(available_variants)
+    else:
+        selected_variant_names = list(available_variants)
 
     if not image_urls:
         return jsonify({'error': 'imageUrls array is required'}), 400
@@ -276,8 +287,8 @@ def generate_pack():
                 if img is None:
                     continue
 
-                # Iterate variant color grades (if you have variants_data defined elsewhere)
-                for variant_name in variants_data.get('options', ['default']):
+                # Iterate ONLY the variants selected by the frontend
+                for variant_name in selected_variant_names:
                     mod_img = img
                     if variant_name == 'earthy':
                         mod_img = ImageEnhance.Color(img).enhance(0.7)
@@ -285,6 +296,7 @@ def generate_pack():
                         mod_img = ImageEnhance.Color(img).enhance(1.3)
                     elif variant_name == 'muted':
                         mod_img = ImageEnhance.Color(img).enhance(0.5)
+                    # 'default' leaves mod_img as-is
 
                     for size_val in sizes:
                         # -- Compute dimensions from ratio and resize --
@@ -323,8 +335,7 @@ def generate_pack():
                             normal_img = generate_normal_map(resized_img, edge_padding_px=edge_padding_px)
 
                             # --- Roughness map (optional alpha-aware dilation) ---
-                            rough_img = generate_roughness_map(resized_img)  # already 'L' per your function
-
+                            rough_img = generate_roughness_map(resized_img)  # returns 'L'
                             if dilate_roughness:
                                 alpha_from_resized = resized_img.convert('RGBA').split()[-1]
                                 rough_img = dilate_gray_using_alpha(
@@ -386,8 +397,6 @@ def generate_pack():
                     os.remove(fpath)
             except Exception as e:
                 logger.error(f"Error cleaning up file {fpath}: {e}")
-
-
 
 if __name__ == "__main__":
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
