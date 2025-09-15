@@ -1,4 +1,4 @@
-import Flask, request, jsonify
+from flask import Flask, request, jsonify
 from PIL import Image, UnidentifiedImageError, ImageOps, ImageEnhance
 import io
 import os
@@ -289,7 +289,7 @@ def upload_file():
     file = request.files['file']
     if file.filename == '': return jsonify({'error': 'No file selected for uploading'}), 400
     if file:
-        filename = f"temp_{uuid.uuid4().hex[:12]}_{file.filename}"
+        filename = f"temp_uploads/{uuid.uuid4().hex[:12]}_{file.filename}"
         try:
             file_bytes = file.read()
             res = supabase.storage.from_(SUPABASE_BUCKET).upload(filename, file_bytes)
@@ -347,7 +347,7 @@ def generate_image():
                 with open(init_image_path, 'wb') as f: f.write(init_img_resp.content)
                 payload_files["init_image"] = open(init_image_path, "rb")
 
-                text_prompts_list = [{"text": prompt}]
+                text_prompts_list = [{"text": prompt}] if prompt else []
                 if negative_prompt: text_prompts_list.append({"text": negative_prompt, "weight": -1})
                 
                 payload_data = {"text_prompts": json.dumps(text_prompts_list), "cfg_scale": cfg_scale, "samples": 1, "steps": steps, "image_strength": denoising_strength}
@@ -370,11 +370,15 @@ def generate_image():
 
                 response = requests.post(api_url, headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, files=payload_files, data=payload_data)
             finally:
-                if "init_image" in payload_files: payload_files["init_image"].close()
-                if "mask_image" in payload_files: payload_files["mask_image"].close()
+                if "init_image" in payload_files and payload_files["init_image"]: payload_files["init_image"].close()
+                if "mask_image" in payload_files and payload_files["mask_image"]: payload_files["mask_image"].close()
                 if os.path.exists(temp_local_req_dir):
-                    if init_image_path and os.path.exists(init_image_path): os.remove(init_image_path)
-                    if mask_image_path and os.path.exists(mask_image_path): os.remove(mask_image_path)
+                    if init_image_path and os.path.exists(init_image_path): 
+                        try: os.remove(init_image_path)
+                        except Exception: pass
+                    if mask_image_path and os.path.exists(mask_image_path):
+                        try: os.remove(mask_image_path)
+                        except Exception: pass
                     try: os.rmdir(temp_local_req_dir)
                     except OSError as e: logger.warning(f"Could not remove temp directory {temp_local_req_dir}: {e}")
         else:

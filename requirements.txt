@@ -1,9 +1,16 @@
+# Web
 Flask==3.0.3
-Flask-Cors
+Werkzeug>=3.0.0,<3.1.0
+Flask-Cors==4.0.1
 gunicorn==21.2.0
+
+# Imaging & numerics
 Pillow==10.4.0
-numpy
+numpy==1.26.4
+scipy==1.11.4
+
+# HTTP
 requests==2.32.3
-flask-cors==3.0.10
-scipy
-supabase
+
+# Supabase client (v2 API: create_client, Client)
+supabase==2.6.0
