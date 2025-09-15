@@ -17,7 +17,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 OUTPUT_DIR = "output"
 variants_data = {
-    'options': ['default', 'earthy', 'vibrant', 'muted'] 
+    'options': ['default', 'earthy', 'vibrant', 'muted']
 }
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -43,7 +43,6 @@ def get_dimensions(base_size, ratio_str):
         # Fallback to square if ratio is invalid
         return (base_size, base_size)
 
-
 # --- Image Processing Functions ---
 
 def load_image_from_url(url):
@@ -53,7 +52,7 @@ def load_image_from_url(url):
         headers = {'User-Agent': 'Assetgineer-Service/1.0'}
         resp = requests.get(url, timeout=20, headers=headers)
         resp.raise_for_status()
-        
+
         img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
         name = os.path.basename(url.split("?")[0]) or f"image_{uuid.uuid4().hex[:6]}"
         logger.debug(f"Image from URL loaded successfully, size: {img.size}")
@@ -227,7 +226,7 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
     except Exception as e:
         logger.error(f"Failed to save variant {original_name} ({label}, {size_str}): {e}", exc_info=True)
         return {'status': 'error', 'message': str(e)}
-   
+
 
 # --- Main API Endpoint ---
 
@@ -247,20 +246,20 @@ def generate_pack():
 
     # --- Payload parsing ---
     data = request.get_json(force=True)
-    image_urls   = data.get('imageUrls', [])
+    image_urls = data.get('imageUrls', [])
     package_name = data.get('packageName', f"pack_{uuid.uuid4().hex[:6]}")
-    sizes        = data.get('sizes', [1024])
-    formats      = data.get('formats', ['png'])
-    pbr_maps     = bool(data.get('pbrMaps', False))
+    sizes = data.get('sizes', [1024])
+    formats = data.get('formats', ['png'])
+    pbr_maps = bool(data.get('pbrMaps', False))
     aspect_ratio = data.get('aspectRatio', None)
 
     # Normal-map edge padding (pixels)
     edge_padding_px = int(data.get('edgePadding', 16))
 
     # Optional dilation for Base and Roughness
-    dilate_base               = bool(data.get('dilateBase', False))
-    base_edge_padding_px      = int(data.get('baseEdgePadding', edge_padding_px))
-    dilate_roughness          = bool(data.get('dilateRoughness', False))
+    dilate_base = bool(data.get('dilateBase', False))
+    base_edge_padding_px = int(data.get('baseEdgePadding', edge_padding_px))
+    dilate_roughness = bool(data.get('dilateRoughness', False))
     roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
 
     # --- NEW: parse selected variants from payload; fall back to your default set ---
@@ -398,14 +397,13 @@ def generate_pack():
             except Exception as e:
                 logger.error(f"Error cleaning up file {fpath}: {e}")
 
-
-# --- NEW: Stability AI & Upload Configuration ---
+# --- Stability AI & Upload Configuration ---
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
 STABILITY_HOST = "https://api.stability.ai"
 TEMP_UPLOAD_DIR = "temp_uploads"
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
-# --- NEW: Endpoint to Serve Generated & Uploaded Files ---
+# --- Endpoint to Serve Generated & Uploaded Files ---
 @app.route('/files/<path:filename>')
 def serve_file(filename):
     """Serves a file from either the OUTPUT_DIR or TEMP_UPLOAD_DIR."""
@@ -425,7 +423,7 @@ def serve_file(filename):
     logger.warning(f"File not found: {filename}")
     return jsonify({"error": "File not found"}), 404
 
-# --- NEW: Endpoint to Handle Temporary File Uploads ---
+# --- Endpoint to Handle Temporary File Uploads ---
 @app.post("/upload_file")
 def upload_file():
     """Handles file uploads from the frontend and returns a URL."""
@@ -449,7 +447,7 @@ def upload_file():
     
     return jsonify({'error': 'File upload failed'}), 500
 
-# --- NEW: Main Image Generation Endpoint ---
+# --- Main Image Generation Endpoint ---
 @app.post("/generate_image")
 def generate_image():
     """Handles text-to-image, image-to-image (enhance), and inpainting."""
@@ -550,11 +548,16 @@ def generate_image():
                     if hasattr(f, 'close'):
                         f.close()
                 if os.path.exists(temp_dir):
-                    if init_image_path and os.path.exists(init_image_path): 
+                    # Clean up downloaded files and the temporary directory
+                    if init_image_path and os.path.exists(init_image_path):
                         os.remove(init_image_path)
-                    if mask_image_path and os.path.exists(mask_image_path): 
+                    if mask_image_path and os.path.exists(mask_image_path):
                         os.remove(mask_image_path)
-                    os.rmdir(temp_dir)
+                    try:
+                        os.rmdir(temp_dir)
+                    except OSError as e:
+                        # Directory might not be empty if other files were created/not closed
+                        logger.warning(f"Could not remove temp directory {temp_dir}: {e}")
 
         else:
             return jsonify({"error": f"Invalid operation: {operation}"}), 400
@@ -564,10 +567,19 @@ def generate_image():
             logger.error(f"Stability AI API error: {response.status_code} - {response.text}")
             return jsonify({"error": "Failed to generate image.", "details": response.text}), response.status_code
 
+        # For Stability AI, the image data is typically Base64 encoded in the JSON response
+        response_json = response.json()
+        if not response_json.get("artifacts"):
+            return jsonify({"error": "No image artifacts found in Stability AI response."}), 500
+            
+        # Assuming we only care about the first artifact
+        base64_image = response_json["artifacts"][0]["base64"]
+        img_data = io.BytesIO(base64.b64decode(base64_image))
+        
         output_filename = f"gen_{uuid.uuid4().hex[:12]}.png"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
         with open(output_path, "wb") as f:
-            f.write(response.content)
+            f.write(img_data.getvalue())
 
         final_url = f"{request.host_url}files/{output_filename}"
         logger.info(f"Image generated successfully: {final_url}")
