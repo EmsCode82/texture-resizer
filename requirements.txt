@@ -6,3 +6,4 @@ numpy
 requests==2.32.3
 flask-cors==3.0.10
 scipy
+supabase
