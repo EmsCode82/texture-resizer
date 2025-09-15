@@ -468,19 +468,15 @@ def generate_image():
         steps = data.get('steps', 30)
 
         logger.info(f"Received request for operation: {operation}")
-        logger.info(f"Denoising: {denoising_strength}, CFG Scale: {cfg_scale}, Steps: {steps}")
 
-        # Text-to-Image Operation
+        # --- Text-to-Image Operation ---
         if operation == 'text-to-image':
             api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/text-to-image"
             width, height = get_dimensions(1024, aspect_ratio)
             payload = {
                 "text_prompts[0][text]": prompt,
-                "cfg_scale": cfg_scale, 
-                "width": width, 
-                "height": height,
-                "samples": 1, 
-                "steps": steps,
+                "cfg_scale": cfg_scale, "width": width, "height": height,
+                "samples": 1, "steps": steps,
             }
             if negative_prompt:
                 payload["text_prompts[0][weight]"] = 1.0
@@ -488,19 +484,14 @@ def generate_image():
                 payload["text_prompts[1][weight]"] = -1.0
             
             logger.info(f"Sending text-to-image request to {api_url}")
-            response = requests.post(
-                api_url, 
-                headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, 
-                data=payload
-            )
+            response = requests.post(api_url, headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, data=payload)
 
-        # Image-to-Image (Enhance) & Inpainting Operations
+        # --- Image-to-Image & Inpainting Operations ---
         elif operation in ['enhance', 'inpaint']:
             init_image_url = data.get('init_image_url')
             if not init_image_url:
-                return jsonify({"error": "Base image URL is required for this operation."}), 400
-            
-            # --- Setup temporary directory for processing ---
+                return jsonify({"error": "Base image URL is required."}), 400
+
             temp_dir = os.path.join(TEMP_UPLOAD_DIR, f"req_{uuid.uuid4().hex[:8]}")
             os.makedirs(temp_dir, exist_ok=True)
             
@@ -512,27 +503,29 @@ def generate_image():
                 logger.info(f"Downloading base image from: {init_image_url}")
                 init_img_resp = requests.get(init_image_url, timeout=20)
                 init_img_resp.raise_for_status()
+                init_image_pil = Image.open(io.BytesIO(init_img_resp.content)).convert("RGB")
                 init_image_path = os.path.join(temp_dir, "init_image.png")
-                with open(init_image_path, 'wb') as f:
-                    f.write(init_img_resp.content)
+                init_image_pil.save(init_image_path)
+                logger.info(f"Base image downloaded. Dimensions: {init_image_pil.size}")
 
-                # --- Prepare the payload for Stability AI ---
                 payload_files = {"init_image": open(init_image_path, "rb")}
                 payload_data = {
                     "text_prompts[0][text]": prompt,
                     "text_prompts[0][weight]": 1.0,
-                    "cfg_scale": cfg_scale,
-                    "samples": 1,
-                    "steps": steps,
-                    "image_strength": denoising_strength 
+                    "cfg_scale": cfg_scale, "samples": 1, "steps": steps
                 }
                 
                 if negative_prompt:
                     payload_data["text_prompts[1][text]"] = negative_prompt
                     payload_data["text_prompts[1][weight]"] = -1.0
                 
-                # --- Inpainting-specific logic ---
+                # --- INTELLIGENT MODEL SWITCHING ---
                 if operation == 'inpaint':
+                    # *** THIS IS THE CRITICAL FIX ***
+                    # Use the specialized inpainting model
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-inpainting-v1-0/image-to-image"
+                    payload_data["image_strength"] = denoising_strength
+
                     mask_image_url = data.get('mask_image_url')
                     if not mask_image_url:
                         return jsonify({"error": "Mask image URL is required for inpainting."}), 400
@@ -541,59 +534,56 @@ def generate_image():
                     mask_img_resp = requests.get(mask_image_url, timeout=20)
                     mask_img_resp.raise_for_status()
 
-                    # --- CRITICAL MASK PROCESSING STEP ---
-                    # Convert the transparent-red-brush PNG into a perfect black-and-white mask
-                    logger.info("Processing mask image to black and white...")
+                    # Process mask to be black and white
                     original_mask = Image.open(io.BytesIO(mask_img_resp.content)).convert("RGBA")
-                    processed_mask = Image.new('L', original_mask.size, 0)  # Create a black canvas
-                    alpha_channel = original_mask.split()[3] # Get the alpha channel
-                    # Wherever the original mask was not fully transparent, paste white (255)
+                    
+                    if original_mask.size != init_image_pil.size:
+                        logger.warning(f"Resizing mask from {original_mask.size} to {init_image_pil.size}")
+                        original_mask = original_mask.resize(init_image_pil.size, Image.Resampling.LANCZOS)
+                        
+                    processed_mask = Image.new('L', original_mask.size, 0)
+                    alpha_channel = original_mask.split()[3]
                     processed_mask.paste(255, mask=alpha_channel)
                     
                     mask_image_path = os.path.join(temp_dir, "processed_mask.png")
-                    processed_mask.save(mask_image_path, "PNG")
-                    logger.info("Mask processing complete.")
+                    processed_mask.save(mask_image_path)
                     
                     payload_files["mask_image"] = open(mask_image_path, "rb")
-                    payload_data["mask_source"] = "MASK_IMAGE_WHITE" # Tell AI to inpaint the white area
-
-                # Use the modern, powerful image-to-image endpoint for both operations
-                api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image"
-                logger.info(f"Sending '{operation}' request to {api_url}")
+                    payload_data["mask_source"] = "MASK_IMAGE_WHITE"
                 
+                else: # operation == 'enhance'
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image"
+                    payload_data["image_strength"] = denoising_strength
+                
+                logger.info(f"Sending '{operation}' request to specialized API: {api_url}")
                 response = requests.post(
-                    api_url,
-                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Accept": "application/json"},
-                    files=payload_files,
-                    data=payload_data
+                    api_url, headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Accept": "application/json"},
+                    files=payload_files, data=payload_data
                 )
 
             finally:
-                # --- Cleanup temporary files ---
-                if init_image_path and os.path.exists(init_image_path):
+                if 'init_image' in payload_files and payload_files['init_image']:
                     payload_files['init_image'].close()
-                if mask_image_path and os.path.exists(mask_image_path):
+                if 'mask_image' in payload_files and payload_files['mask_image']:
                     payload_files['mask_image'].close()
+                gc.collect()
                 if os.path.exists(temp_dir):
-                    for f in os.listdir(temp_dir):
-                        os.remove(os.path.join(temp_dir, f))
+                    for f in os.listdir(temp_dir): os.remove(os.path.join(temp_dir, f))
                     os.rmdir(temp_dir)
-                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
         
         else:
             return jsonify({"error": f"Unknown operation: {operation}"}), 400
 
-        # --- Handle the response from Stability AI ---
         if response.status_code != 200:
             logger.error(f"Stability AI API error: {response.status_code} - {response.text}")
             error_details = response.json().get('message', response.text)
-            return jsonify({"error": f"Failed to generate image on server. Details: {error_details}"}), 500
+            return jsonify({"error": f"Failed to generate image. Details: {error_details}"}), 500
 
         output_image = response.json()["artifacts"][0]["base64"]
         return jsonify({'url': f"data:image/png;base64,{output_image}"})
 
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+        logger.error(f"An unexpected server error occurred: {e}", exc_info=True)
         return jsonify({"error": "An internal server error occurred."}), 500
 
 if __name__ == "__main__":
