@@ -1,11 +1,10 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from PIL import Image, UnidentifiedImageError, ImageOps, ImageEnhance
 import io
 import os
 import uuid
 import requests
 import re
-import base64
 from flask_cors import CORS
 import numpy as np
 from scipy.ndimage import convolve, distance_transform_edt
@@ -13,13 +12,10 @@ from zipfile import ZipFile, ZIP_DEFLATED
 import gc
 import logging
 
-# NEW: Import Supabase client
-from supabase import create_client, Client
-
 # --- Basic Setup ---
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-OUTPUT_DIR = "output" # Still used for asset pack zipping (local temporary files)
+OUTPUT_DIR = "output"
 variants_data = {
     'options': ['default', 'earthy', 'vibrant', 'muted']
 }
@@ -27,28 +23,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__) # Use logger object directly
-
-# --- NEW: Supabase Configuration ---
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "public-assets") # Default bucket name
-
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Supabase client initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Supabase client: {e}")
-        supabase = None # Ensure it's None if init fails
-else:
-    logger.warning("Supabase URL or Key not found. Supabase features for image storage will be disabled.")
-
-
-# --- Stability AI Configuration ---
-STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
-STABILITY_HOST = "https://api.stability.ai"
 
 # --- Helper Function for Aspect Ratios ---
 def get_dimensions(base_size, ratio_str):
@@ -69,16 +43,16 @@ def get_dimensions(base_size, ratio_str):
         # Fallback to square if ratio is invalid
         return (base_size, base_size)
 
-
-# --- Image Processing Functions (Remain unchanged, as they operate on PIL Image objects) ---
+# --- Image Processing Functions ---
 
 def load_image_from_url(url):
-    logger.debug(f"Fetching image from URL: {url}")
+    logger = logging.getLogger(__name__)
     try:
+        logger.debug(f"Fetching image from URL: {url}")
         headers = {'User-Agent': 'Assetgineer-Service/1.0'}
         resp = requests.get(url, timeout=20, headers=headers)
         resp.raise_for_status()
-        
+
         img = Image.open(io.BytesIO(resp.content)).convert('RGBA')
         name = os.path.basename(url.split("?")[0]) or f"image_{uuid.uuid4().hex[:6]}"
         logger.debug(f"Image from URL loaded successfully, size: {img.size}")
@@ -196,8 +170,8 @@ def dilate_gray_using_alpha(gray_img: Image.Image, alpha_img: Image.Image, paddi
     return r
 
 def save_variant(img, original_name, size_str, label='base', file_format='png', pbr_type=None, ratio_str='1:1'):
-    """Saves an image variant to disk with robust format handling and safe filenames for asset pack."""
-    logger.debug(f"Saving variant for asset pack: {original_name} ({label}, {size_str})")
+    """Saves an image variant to disk with robust format handling and safe filenames."""
+    logger = logging.getLogger(__name__)
     try:
         base_name, _ = os.path.splitext(original_name or "image")
         base_name = re.sub(r'[^a-zA-Z0-9_-]', '', base_name) or "image"
@@ -236,7 +210,7 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
                 image_to_save = image_to_save.convert('RGB')
 
         fname = f"{base_name}_{label}_{ratio_txt}{pbr_suffix}_{size_str}_{unique_id}.{ext}"
-        fpath = os.path.join(OUTPUT_DIR, fname) # Asset pack files saved locally then zipped
+        fpath = os.path.join(OUTPUT_DIR, fname)
 
         save_kwargs = {}
         if pil_fmt == 'PNG':
@@ -254,16 +228,18 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
         return {'status': 'error', 'message': str(e)}
 
 
-# --- Asset Pack Generation Endpoint (Existing Logic) ---
+# --- Main API Endpoint ---
 
 @app.post("/generate_pack")
 def generate_pack():
-    """Generates an asset pack with image variants and PBR maps, then zips them."""
+    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals.
+       NOW honors variants sent from frontend: { "variants": { "options": [...] } }"""
+    logger = logging.getLogger(__name__)
     logger.info("Received request for /generate_pack")
 
     # --- Auth & payload sanity ---
     api_key = request.headers.get('X-API-Key')
-    if api_key != 'mock_api_key_123': # Placeholder API key
+    if api_key != 'mock_api_key_123':
         return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
     if not request.is_json:
         return jsonify({'error': 'JSON payload required'}), 400
@@ -286,7 +262,7 @@ def generate_pack():
     dilate_roughness = bool(data.get('dilateRoughness', False))
     roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
 
-    # Parse selected variants from payload; fall back to your default set
+    # --- NEW: parse selected variants from payload; fall back to your default set ---
     available_variants = set(variants_data.get('options', ['default']))
     requested_variants = data.get('variants', {}).get('options', None)
     if isinstance(requested_variants, list):
@@ -301,7 +277,7 @@ def generate_pack():
         return jsonify({'error': 'imageUrls array is required'}), 400
 
     zip_buffer = io.BytesIO()
-    all_temp_files = [] # For local files before zipping
+    all_temp_files = []
 
     try:
         with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
@@ -421,14 +397,37 @@ def generate_pack():
             except Exception as e:
                 logger.error(f"Error cleaning up file {fpath}: {e}")
 
-# --- Endpoint to Handle Temporary File Uploads (NEW Supabase version) ---
+# --- Stability AI & Upload Configuration ---
+STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
+STABILITY_HOST = "https://api.stability.ai"
+TEMP_UPLOAD_DIR = "temp_uploads"
+os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
+
+# --- Endpoint to Serve Generated & Uploaded Files ---
+@app.route('/files/<path:filename>')
+def serve_file(filename):
+    """Serves a file from either the OUTPUT_DIR or TEMP_UPLOAD_DIR."""
+    logger = logging.getLogger(__name__)
+    # Check in output directory first
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    if os.path.exists(output_path):
+        logger.debug(f"Serving file from output: {output_path}")
+        return send_file(output_path)
+    
+    # Check in temp directory if not found in output
+    temp_path = os.path.join(TEMP_UPLOAD_DIR, filename)
+    if os.path.exists(temp_path):
+        logger.debug(f"Serving file from temp: {temp_path}")
+        return send_file(temp_path)
+        
+    logger.warning(f"File not found: {filename}")
+    return jsonify({"error": "File not found"}), 404
+
+# --- Endpoint to Handle Temporary File Uploads ---
 @app.post("/upload_file")
 def upload_file():
-    logger.info("Received request for /upload_file")
-    if not supabase:
-        logger.error("Supabase client not initialized. File upload to Supabase disabled.")
-        return jsonify({'error': 'Supabase service unavailable'}), 503
-
+    """Handles file uploads from the frontend and returns a URL."""
+    logger = logging.getLogger(__name__)
     if 'file' not in request.files:
         logger.error("No file part in request to /upload_file")
         return jsonify({'error': 'No file part in the request'}), 400
@@ -439,34 +438,23 @@ def upload_file():
 
     if file:
         filename = f"temp_{uuid.uuid4().hex[:12]}_{file.filename}"
-        try:
-            file_bytes = file.read() # Read file content into bytes
-            # Upload to Supabase
-            res = supabase.storage.from_(SUPABASE_BUCKET).upload(filename, file_bytes)
-            if res.status_code == 200:
-                public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(filename)
-                logger.info(f"File uploaded to Supabase: {public_url}")
-                return jsonify({'file_url': public_url})
-            else:
-                logger.error(f"Supabase upload failed: {res.json()}")
-                return jsonify({'error': 'Failed to upload file to Supabase', 'details': res.json()}), 500
-        except Exception as e:
-            logger.error(f"Error during Supabase file upload: {e}", exc_info=True)
-            return jsonify({'error': 'Internal server error during upload', 'details': str(e)}), 500
-
+        save_path = os.path.join(TEMP_UPLOAD_DIR, filename)
+        file.save(save_path)
+        
+        file_url = f"{request.host_url}files/{filename}"
+        logger.info(f"File uploaded successfully: {file_url}")
+        return jsonify({'file_url': file_url})
+    
     return jsonify({'error': 'File upload failed'}), 500
 
-# --- Main Image Generation Endpoint (NEW Supabase version) ---
+# --- Main Image Generation Endpoint ---
 @app.post("/generate_image")
 def generate_image():
-    """Handles text-to-image, image-to-image (enhance), and inpainting, saving to Supabase."""
-    logger.info("Received request for /generate_image")
+    """Handles text-to-image, image-to-image (enhance), and inpainting."""
+    logger = logging.getLogger(__name__)
     if not STABILITY_API_KEY:
         logger.error("Stability AI API key is not configured.")
         return jsonify({"error": "Image generation service is not configured."}), 503
-    if not supabase: # Check Supabase initialization
-        logger.error("Supabase client not initialized. Image upload to Supabase disabled.")
-        return jsonify({"error": "Image generation service is not fully configured (Supabase)."}, 503)
 
     try:
         data = request.get_json(force=True)
@@ -478,12 +466,12 @@ def generate_image():
         cfg_scale = data.get('cfg_scale', 7)
         steps = data.get('steps', 30)
 
-        # --- Text-to-Image Operation ---
+        # Text-to-Image Operation
         if operation == 'text-to-image':
             api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/text-to-image"
             width, height = get_dimensions(1024, aspect_ratio)
             payload = {
-                "text_prompts": [{"text": prompt}], # Use json for text_prompts
+                "text_prompts[0][text]": prompt,
                 "cfg_scale": cfg_scale, 
                 "width": width, 
                 "height": height,
@@ -491,50 +479,44 @@ def generate_image():
                 "steps": steps,
             }
             if negative_prompt:
-                payload["text_prompts"].append({"text": negative_prompt, "weight": -1}) # Add negative prompt with weight -1
-
+                payload["text_prompts[0][negative_text]"] = negative_prompt
+            
             response = requests.post(
                 api_url, 
-                headers={"Authorization": f"Bearer {STABILITY_API_KEY}", "Content-Type": "application/json"}, 
-                json=payload # Send as JSON
+                headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, 
+                data=payload
             )
 
-        # --- Image-to-Image & Inpainting Operations ---
+        # Image-to-Image & Inpainting Operations
         elif operation in ['enhance', 'inpaint']:
             init_image_url = data.get('init_image_url')
             if not init_image_url:
                 return jsonify({"error": "Base image URL is required."}), 400
             
-            # Temporary local directory to store downloaded images for API call
-            temp_local_req_dir = os.path.join(OUTPUT_DIR, f"temp_req_{uuid.uuid4().hex[:8]}")
-            os.makedirs(temp_local_req_dir, exist_ok=True)
+            temp_dir = os.path.join(TEMP_UPLOAD_DIR, f"req_{uuid.uuid4().hex[:8]}")
+            os.makedirs(temp_dir, exist_ok=True)
             
             init_image_path = None
             mask_image_path = None
             
             try:
-                # Download the base image from its URL (likely Supabase)
+                # Download the base image
                 init_img_resp = requests.get(init_image_url, timeout=20)
                 init_img_resp.raise_for_status()
-                init_image_path = os.path.join(temp_local_req_dir, "init_image.png")
+                init_image_path = os.path.join(temp_dir, "init_image.png")
                 with open(init_image_path, 'wb') as f:
                     f.write(init_img_resp.content)
 
                 payload_files = {"init_image": open(init_image_path, "rb")}
-                
-                # Stability AI's image-to-image/masking expects text_prompts as JSON string
-                text_prompts_list = [{"text": prompt}]
-                if negative_prompt:
-                    text_prompts_list.append({"text": negative_prompt, "weight": -1})
-                
                 payload_data = {
-                    "text_prompts": json.dumps(text_prompts_list), # Send as JSON string for multipart
+                    "text_prompts[0][text]": prompt,
                     "cfg_scale": cfg_scale,
                     "samples": 1,
-                    "steps": steps,
-                    "image_strength": denoising_strength # Denoising strength common for image-to-image
+                    "steps": steps
                 }
-                
+                if negative_prompt:
+                    payload_data["text_prompts[0][negative_text]"] = negative_prompt
+
                 if operation == 'inpaint':
                     mask_image_url = data.get('mask_image_url')
                     if not mask_image_url:
@@ -542,15 +524,17 @@ def generate_image():
                     
                     mask_img_resp = requests.get(mask_image_url, timeout=20)
                     mask_img_resp.raise_for_status()
-                    mask_image_path = os.path.join(temp_local_req_dir, "mask_image.png")
+                    mask_image_path = os.path.join(temp_dir, "mask_image.png")
                     with open(mask_image_path, 'wb') as f:
                         f.write(mask_img_resp.content)
                     
                     payload_files["mask_image"] = open(mask_image_path, "rb")
-                    payload_data["mask_source"] = "MASK_IMAGE_BLACK" # Indicates mask color to use as the masked area
-                    api_url = f"{STABILITY_HOST}/v1/generation/stable-inpainting-512-v2-0/image-to-image/masking" # Inpainting model
-                else: # 'enhance' operation
-                    api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image" # General image-to-image model
+                    payload_data["mask_source"] = "MASK_IMAGE_BLACK"
+                    payload_data["image_strength"] = denoising_strength
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-inpainting-512-v2-0/image-to-image/masking"
+                else:
+                    payload_data["image_strength"] = denoising_strength
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image"
 
                 response = requests.post(
                     api_url, 
@@ -560,52 +544,46 @@ def generate_image():
                 )
 
             finally:
-                # Close file handles and clean up temporary local files
-                if "init_image" in payload_files:
-                    payload_files["init_image"].close()
-                if "mask_image" in payload_files:
-                    payload_files["mask_image"].close()
-                
-                if os.path.exists(temp_local_req_dir):
+                for f in payload_files.values():
+                    if hasattr(f, 'close'):
+                        f.close()
+                if os.path.exists(temp_dir):
+                    # Clean up downloaded files and the temporary directory
                     if init_image_path and os.path.exists(init_image_path):
                         os.remove(init_image_path)
                     if mask_image_path and os.path.exists(mask_image_path):
                         os.remove(mask_image_path)
                     try:
-                        os.rmdir(temp_local_req_dir) # Remove dir only if empty
+                        os.rmdir(temp_dir)
                     except OSError as e:
-                        logger.warning(f"Could not remove temp directory {temp_local_req_dir}: {e}")
+                        # Directory might not be empty if other files were created/not closed
+                        logger.warning(f"Could not remove temp directory {temp_dir}: {e}")
 
         else:
             return jsonify({"error": f"Invalid operation: {operation}"}), 400
 
-        # --- Process Stability AI Response and Upload to Supabase ---
+        # Process Response
         if response.status_code != 200:
             logger.error(f"Stability AI API error: {response.status_code} - {response.text}")
             return jsonify({"error": "Failed to generate image.", "details": response.text}), response.status_code
 
+        # For Stability AI, the image data is typically Base64 encoded in the JSON response
         response_json = response.json()
         if not response_json.get("artifacts"):
             return jsonify({"error": "No image artifacts found in Stability AI response."}), 500
             
+        # Assuming we only care about the first artifact
         base64_image = response_json["artifacts"][0]["base64"]
-        img_data_bytes = base64.b64decode(base64_image)
+        img_data = io.BytesIO(base64.b64decode(base64_image))
         
         output_filename = f"gen_{uuid.uuid4().hex[:12]}.png"
-        
-        # Upload generated image to Supabase
-        try:
-            res = supabase.storage.from_(SUPABASE_BUCKET).upload(output_filename, img_data_bytes)
-            if res.status_code == 200:
-                final_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(output_filename)
-                logger.info(f"Image generated and uploaded to Supabase: {final_url}")
-                return jsonify({"url": final_url})
-            else:
-                logger.error(f"Supabase upload of generated image failed: {res.json()}")
-                return jsonify({'error': 'Failed to save generated image to Supabase', 'details': res.json()}), 500
-        except Exception as e:
-            logger.error(f"Error during Supabase upload of generated image: {e}", exc_info=True)
-            return jsonify({'error': 'Internal server error saving generated image', 'details': str(e)}), 500
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        with open(output_path, "wb") as f:
+            f.write(img_data.getvalue())
+
+        final_url = f"{request.host_url}files/{output_filename}"
+        logger.info(f"Image generated successfully: {final_url}")
+        return jsonify({"url": final_url})
 
     except Exception as e:
         logger.error(f"Error in /generate_image: {e}", exc_info=True)
