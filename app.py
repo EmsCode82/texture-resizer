@@ -232,12 +232,14 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
 
 @app.post("/generate_pack")
 def generate_pack():
-    """Generates an asset pack with image variants and PBR maps, then zips them."""
+    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals.
+       NOW honors variants sent from frontend: { "variants": { "options": [...] } }"""
+    logger = logging.getLogger(__name__)
     logger.info("Received request for /generate_pack")
 
     # --- Auth & payload sanity ---
     api_key = request.headers.get('X-API-Key')
-    if api_key != 'mock_api_key_123': # Placeholder API key
+    if api_key != 'mock_api_key_123':
         return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
     if not request.is_json:
         return jsonify({'error': 'JSON payload required'}), 400
@@ -260,7 +262,7 @@ def generate_pack():
     dilate_roughness = bool(data.get('dilateRoughness', False))
     roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
 
-    # Parse selected variants from payload; fall back to your default set
+    # --- NEW: parse selected variants from payload; fall back to your default set ---
     available_variants = set(variants_data.get('options', ['default']))
     requested_variants = data.get('variants', {}).get('options', None)
     if isinstance(requested_variants, list):
@@ -275,7 +277,7 @@ def generate_pack():
         return jsonify({'error': 'imageUrls array is required'}), 400
 
     zip_buffer = io.BytesIO()
-    all_temp_files = [] # For local files before zipping
+    all_temp_files = []
 
     try:
         with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
