@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, url_for
 from PIL import Image, UnidentifiedImageError, ImageOps, ImageEnhance
 import io
 import os
@@ -11,18 +11,32 @@ from scipy.ndimage import convolve, distance_transform_edt
 from zipfile import ZipFile, ZIP_DEFLATED
 import gc
 import logging
+import base64
 
 # --- Basic Setup ---
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 OUTPUT_DIR = "output"
+# NEW: Define a static folder for uploads
+UPLOAD_FOLDER = 'static/uploads'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 variants_data = {
     'options': ['default', 'earthy', 'vibrant', 'muted'] 
 }
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# --- NEW: Stability AI Configuration ---
+# IMPORTANT: Add this to your environment variables on Railway
+STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
+STABILITY_API_HOST = "https://api.stability.ai"
+STABILITY_ENGINE_ID = "stable-diffusion-xl-1024-v1-0" # Or another preferred engine
+
+if not STABILITY_API_KEY:
+    logging.warning("STABILITY_API_KEY environment variable not set. /generate_image will fail.")
 
 # --- Helper Function for Aspect Ratios ---
 def get_dimensions(base_size, ratio_str):
@@ -129,274 +143,235 @@ def dilate_rgba(img: Image.Image, padding: int = 16) -> Image.Image:
     arr = np.array(img.convert('RGBA'))
     rgb = arr[..., :3]
     alpha = arr[..., 3]
-
-    # Foreground mask (where alpha > 0)
+    
     mask = alpha > 0
-    inv = ~mask  # transparent/background
+    if not mask.any(): return img
+    
+    dist = distance_transform_edt(~mask, return_distances=True, return_indices=True)
+    indices = dist[1]
+    
+    bleed_mask = (dist[0] > 0) & (dist[0] <= padding)
+    
+    rgb[bleed_mask] = rgb[tuple(indices[..., i][bleed_mask] for i in range(2))]
+    
+    new_arr = np.dstack((rgb, alpha))
+    return Image.fromarray(new_arr, 'RGBA')
 
-    if not inv.any():
-        return img  # nothing to dilate
-
-    # nearest foreground pixel indices for every background pixel
-    _, (iy, ix) = distance_transform_edt(inv, return_indices=True)
-
-    # Fill background pixels with nearest foreground RGB
-    filled_rgb = rgb.copy()
-    filled_rgb[inv] = rgb[iy[inv], ix[inv]]
-
-    # Limit dilation distance to 'padding' pixels
-    dist = distance_transform_edt(inv)
-    limited_rgb = rgb.copy()
-    reach = (inv) & (dist <= padding)
-    limited_rgb[reach] = filled_rgb[reach]
-
-    out = np.dstack([limited_rgb, alpha])
-    return Image.fromarray(out, 'RGBA')
-
-def dilate_gray_using_alpha(gray_img: Image.Image, alpha_img: Image.Image, padding: int = 16) -> Image.Image:
+def create_variants(image: Image.Image, variant_type='default'):
     """
-    Dilation for single-channel textures (e.g., Roughness) using the RGBA dilater.
-    Uses alpha as the foreground mask, bleeds grayscale values into transparent edges,
-    and returns a single-channel 'L' image.
+    Generates a dictionary of image variants based on the selected type.
     """
-    gray = gray_img.convert('L')
-    a = alpha_img.convert('L')
+    variants = {}
+    base_rgb = image.convert('RGB')
+    
+    if variant_type == 'earthy':
+        # Desaturate and apply a sepia-like tint
+        enhancer = ImageEnhance.Color(base_rgb)
+        desaturated = enhancer.enhance(0.4)
+        sepia = Image.new('RGB', desaturated.size, (255, 240, 192))
+        variants['Earthy'] = Image.blend(desaturated, sepia, 0.2)
+    elif variant_type == 'vibrant':
+        # Increase saturation and contrast
+        enhancer = ImageEnhance.Color(base_rgb)
+        variants['Vibrant'] = enhancer.enhance(1.5)
+    elif variant_type == 'muted':
+        # Decrease saturation
+        enhancer = ImageEnhance.Color(base_rgb)
+        variants['Muted'] = enhancer.enhance(0.5)
+        
+    return variants
 
-    # Pack to RGBA so we can reuse dilate_rgba (put gray into RGB)
-    merged = Image.merge('RGBA', (gray, gray, gray, a))
-    dilated_rgba = dilate_rgba(merged, padding=padding)
-
-    # Extract the red channel back as grayscale
-    r, _, _, _ = dilated_rgba.split()
-    return r
-
-def save_variant(img, original_name, size_str, label='base', file_format='png', pbr_type=None, ratio_str='1:1'):
-    """Saves an image variant to disk with robust format handling and safe filenames."""
+# --- NEW: Endpoint for uploading mask images ---
+@app.post("/upload_image")
+def upload_image():
     logger = logging.getLogger(__name__)
+    if 'file' not in request.files:
+        logger.error("No file part in request to /upload_image")
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        logger.error("No selected file in request to /upload_image")
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if file:
+        filename = f"mask_{uuid.uuid4().hex[:8]}.png"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # Return the absolute URL for the saved file
+        file_url = url_for('static', filename=f'uploads/{filename}', _external=True)
+        logger.info(f"Image uploaded and saved to {filepath}, URL: {file_url}")
+        
+        return jsonify({'file_url': file_url})
+
+    return jsonify({'error': 'File upload failed'}), 500
+
+
+# --- NEW: Endpoint for AI Image Generation ---
+@app.post("/generate_image")
+def generate_image():
+    logger = logging.getLogger(__name__)
+    logger.info("Received request for /generate_image")
+    
+    if not STABILITY_API_KEY:
+        return jsonify({'error': 'Image generation service is not configured on the server.'}), 503
+
+    data = request.get_json()
+    prompt = data.get('prompt')
+    operation = data.get('operation', 'text-to-image')
+
+    if not prompt:
+        return jsonify({'error': 'Prompt is required'}), 400
+    
+    # Prepare the payload for Stability AI
+    payload = {
+        "text_prompts[0][text]": prompt,
+        "text_prompts[0][weight]": 1.0,
+        "cfg_scale": 7,
+        "steps": 40,
+        "samples": 1,
+    }
+
+    if data.get('negative_prompt'):
+        payload["text_prompts[1][text]"] = data.get('negative_prompt')
+        payload["text_prompts[1][weight]"] = -1.0
+        
+    if data.get('aspect_ratio'):
+        try:
+            width, height = get_dimensions(1024, data.get('aspect_ratio'))
+            payload["width"] = width
+            payload["height"] = height
+        except Exception:
+            logger.warning("Invalid aspect ratio, falling back to default.")
+
+    files = {}
+
     try:
-        base_name, _ = os.path.splitext(original_name or "image")
-        base_name = re.sub(r'[^a-zA-Z0-9_-]', '', base_name) or "image"
+        if operation == 'inpaint' and data.get('init_image_url') and data.get('mask_image_url'):
+            logger.info("Preparing for inpainting operation...")
+            init_image, _ = load_image_from_url(data.get('init_image_url'))
+            mask_image, _ = load_image_from_url(data.get('mask_image_url'))
 
-        pbr_suffix = f"_{pbr_type}" if pbr_type else ""
-        unique_id = uuid.uuid4().hex[:8]
+            if not init_image or not mask_image:
+                return jsonify({'error': 'Could not load base image or mask for inpainting'}), 500
+            
+            init_image_bytes = io.BytesIO()
+            init_image.save(init_image_bytes, format='PNG')
+            files['init_image'] = init_image_bytes.getvalue()
 
-        # Safe ratio text
-        ratio_txt = str(ratio_str or '1:1').replace(':', 'x')
+            mask_image_bytes = io.BytesIO()
+            mask_image.save(mask_image_bytes, format='PNG')
+            files['mask_image'] = mask_image_bytes.getvalue()
 
-        # Normalize extension/format
-        ext = (file_format or 'png').lower()
-        if ext == 'jpg':
-            ext = 'jpeg'
-        pil_fmt = {
-            'png': 'PNG',
-            'tga': 'TGA',
-            'jpeg': 'JPEG',
-            'webp': 'WEBP'
-        }.get(ext, ext.upper())
+            payload['mask_source'] = 'MASK_IMAGE_BLACK' # Tells Stability to use the mask image (white=inpaint)
+            
+            api_endpoint = f"{STABILITY_API_HOST}/v1/generation/{STABILITY_ENGINE_ID}/image-to-image/masking"
 
-        # Choose correct image mode per type/format
-        image_to_save = img
-        if pbr_type == 'roughness':
-            # keep single-channel for engine-friendly roughness
-            if image_to_save.mode != 'L':
-                image_to_save = image_to_save.convert('L')
-        else:
-            # color textures / normals: keep alpha when supported
-            if ext in ('jpeg',):  # formats without alpha
-                image_to_save = image_to_save.convert('RGB')
-            elif ext in ('png', 'tga', 'webp'):
-                image_to_save = image_to_save.convert('RGBA')
-            else:
-                # default safe: RGB
-                image_to_save = image_to_save.convert('RGB')
+        elif operation == 'enhance' and data.get('init_image_url'):
+            logger.info("Preparing for image-to-image (enhance) operation...")
+            init_image, _ = load_image_from_url(data.get('init_image_url'))
+            if not init_image:
+                return jsonify({'error': 'Could not load base image for enhancement'}), 500
+            
+            init_image_bytes = io.BytesIO()
+            init_image.save(init_image_bytes, format='PNG')
+            files['init_image'] = init_image_bytes.getvalue()
 
-        fname = f"{base_name}_{label}_{ratio_txt}{pbr_suffix}_{size_str}_{unique_id}.{ext}"
-        fpath = os.path.join(OUTPUT_DIR, fname)
+            payload['image_strength'] = data.get('strength', 0.7)
+            api_endpoint = f"{STABILITY_API_HOST}/v1/generation/{STABILITY_ENGINE_ID}/image-to-image"
+        
+        else: # text-to-image
+            logger.info("Preparing for text-to-image operation...")
+            api_endpoint = f"{STABILITY_API_HOST}/v1/generation/{STABILITY_ENGINE_ID}/text-to-image"
 
-        save_kwargs = {}
-        if pil_fmt == 'PNG':
-            save_kwargs.update({'optimize': True})
-        if pil_fmt == 'JPEG':
-            save_kwargs.update({'quality': 95})  # tweak as desired
+        # --- Make the API call to Stability AI ---
+        response = requests.post(
+            api_endpoint,
+            headers={"Authorization": f"Bearer {STABILITY_API_KEY}"},
+            data=payload,
+            files=files
+        )
+        response.raise_for_status() # Raise an error for bad status codes (4xx or 5xx)
 
-        # Special case: TGA expects 'RGBA' (or 'RGB'); Pillow handles 'L' too, but keep modes consistent.
-        image_to_save.save(fpath, format=pil_fmt, **save_kwargs)
+        response_data = response.json()
+        
+        # Save the generated image and return its URL
+        for i, image in enumerate(response_data["artifacts"]):
+            image_b64 = image["base64"]
+            
+            # Save to a file
+            filename = f"gen_{uuid.uuid4().hex[:8]}.png"
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            with open(filepath, "wb") as f:
+                f.write(base64.b64decode(image_b64))
 
-        logger.debug(f"Successfully saved variant to {fpath}")
-        return {'status': 'success', 'path': fpath, 'arcname': fname}
+            # Return the URL of the first generated image
+            file_url = url_for('static', filename=f'uploads/{filename}', _external=True)
+            logger.info(f"Successfully generated image, saved to {filepath}, URL: {file_url}")
+            return jsonify({'url': file_url})
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Stability AI API error: {e.response.text}", exc_info=True)
+        return jsonify({'error': 'Failed to generate image from AI service.', 'details': e.response.json()}), 502
     except Exception as e:
-        logger.error(f"Failed to save variant {original_name} ({label}, {size_str}): {e}", exc_info=True)
-        return {'status': 'error', 'message': str(e)}
-   
+        logger.error(f"An unexpected error occurred in /generate_image: {e}", exc_info=True)
+        return jsonify({'error': 'An internal server error occurred.'}), 500
+
 
 # --- Main API Endpoint ---
-
 @app.post("/generate_pack")
 def generate_pack():
-    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals.
-       NOW honors variants sent from frontend: { "variants": { "options": [...] } }"""
     logger = logging.getLogger(__name__)
-    logger.info("Received request for /generate_pack")
+    if 'image_url' not in request.form:
+        logger.warning("Request to /generate_pack missing image_url")
+        return "Missing image_url", 400
+    
+    image_url = request.form['image_url']
+    variant_type = request.form.get('variant', 'default')
+    
+    base_image, name = load_image_from_url(image_url)
+    if not base_image:
+        logger.error(f"Failed to process image_url for /generate_pack: {image_url}")
+        return "Could not process the provided image URL", 400
 
-    # --- Auth & payload sanity ---
-    api_key = request.headers.get('X-API-Key')
-    if api_key != 'mock_api_key_123':
-        return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
-    if not request.is_json:
-        return jsonify({'error': 'JSON payload required'}), 400
+    output_maps = {
+        'albedo': base_image,
+        'normal': generate_normal_map(base_image),
+        'roughness': generate_roughness_map(base_image)
+    }
 
-    # --- Payload parsing ---
-    data = request.get_json(force=True)
-    image_urls   = data.get('imageUrls', [])
-    package_name = data.get('packageName', f"pack_{uuid.uuid4().hex[:6]}")
-    sizes        = data.get('sizes', [1024])
-    formats      = data.get('formats', ['png'])
-    pbr_maps     = bool(data.get('pbrMaps', False))
-    aspect_ratio = data.get('aspectRatio', None)
-
-    # Normal-map edge padding (pixels)
-    edge_padding_px = int(data.get('edgePadding', 16))
-
-    # Optional dilation for Base and Roughness
-    dilate_base               = bool(data.get('dilateBase', False))
-    base_edge_padding_px      = int(data.get('baseEdgePadding', edge_padding_px))
-    dilate_roughness          = bool(data.get('dilateRoughness', False))
-    roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
-
-    # --- NEW: parse selected variants from payload; fall back to your default set ---
-    available_variants = set(variants_data.get('options', ['default']))
-    requested_variants = data.get('variants', {}).get('options', None)
-    if isinstance(requested_variants, list):
-        selected_variant_names = [v for v in requested_variants if v in available_variants]
-        if not selected_variant_names:
-            logger.info("No valid variants in payload; falling back to defaults.")
-            selected_variant_names = list(available_variants)
-    else:
-        selected_variant_names = list(available_variants)
-
-    if not image_urls:
-        return jsonify({'error': 'imageUrls array is required'}), 400
+    color_variants = create_variants(base_image, variant_type)
 
     zip_buffer = io.BytesIO()
-    all_temp_files = []
+    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
+        for map_name, img in output_maps.items():
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='PNG')
+            zip_file.writestr(f'{name}_{map_name}.png', img_buffer.getvalue())
+        
+        for variant_name, img in color_variants.items():
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='PNG')
+            zip_file.writestr(f'{name}_albedo_{variant_name}.png', img_buffer.getvalue())
 
-    try:
-        with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
-            for url in image_urls:
-                img, original_name = load_image_from_url(url)
-                if img is None:
-                    continue
+    zip_buffer.seek(0)
+    
+    # Clean up
+    del base_image, output_maps, color_variants
+    gc.collect()
 
-                # Iterate ONLY the variants selected by the frontend
-                for variant_name in selected_variant_names:
-                    mod_img = img
-                    if variant_name == 'earthy':
-                        mod_img = ImageEnhance.Color(img).enhance(0.7)
-                    elif variant_name == 'vibrant':
-                        mod_img = ImageEnhance.Color(img).enhance(1.3)
-                    elif variant_name == 'muted':
-                        mod_img = ImageEnhance.Color(img).enhance(0.5)
-                    # 'default' leaves mod_img as-is
-
-                    for size_val in sizes:
-                        # -- Compute dimensions from ratio and resize --
-                        dimensions = get_dimensions(size_val, aspect_ratio)
-                        size_str_for_filename = f"{dimensions[0]}x{dimensions[1]}"
-                        resized_img = mod_img.resize(dimensions, Image.Resampling.LANCZOS)
-
-                        # =========================
-                        # Base Color export (with optional edge dilation)
-                        # =========================
-                        base_to_save = resized_img
-                        if dilate_base:
-                            base_to_save = dilate_rgba(resized_img.convert('RGBA'), padding=base_edge_padding_px)
-
-                        for fmt in formats:
-                            result = save_variant(
-                                base_to_save,
-                                original_name,
-                                size_str_for_filename,
-                                label=variant_name,
-                                file_format=fmt,
-                                ratio_str=aspect_ratio
-                            )
-                            if result['status'] == 'success':
-                                arcname = os.path.join('Textures', variant_name, result['arcname'])
-                                zip_file.write(result['path'], arcname)
-                                all_temp_files.append(result['path'])
-                            else:
-                                raise IOError(f"Failed to save base texture: {result.get('message')}")
-
-                        # =========================
-                        # PBR Maps export
-                        # =========================
-                        if pbr_maps:
-                            # --- Normal map (alpha-aware + edge padding) ---
-                            normal_img = generate_normal_map(resized_img, edge_padding_px=edge_padding_px)
-
-                            # --- Roughness map (optional alpha-aware dilation) ---
-                            rough_img = generate_roughness_map(resized_img)  # returns 'L'
-                            if dilate_roughness:
-                                alpha_from_resized = resized_img.convert('RGBA').split()[-1]
-                                rough_img = dilate_gray_using_alpha(
-                                    rough_img,
-                                    alpha_from_resized,
-                                    padding=roughness_edge_padding_px
-                                )
-
-                            pbr_results = {
-                                'normal': normal_img,
-                                'roughness': rough_img
-                            }
-
-                            # Save each PBR layer
-                            for pbr_type, pbr_img in pbr_results.items():
-                                for fmt in formats:
-                                    result = save_variant(
-                                        pbr_img,
-                                        original_name,
-                                        size_str_for_filename,
-                                        label=variant_name,
-                                        file_format=fmt,
-                                        pbr_type=pbr_type,
-                                        ratio_str=aspect_ratio
-                                    )
-                                    if result['status'] == 'success':
-                                        arcname = os.path.join('PBR', pbr_type.capitalize(), variant_name, result['arcname'])
-                                        zip_file.write(result['path'], arcname)
-                                        all_temp_files.append(result['path'])
-                                    else:
-                                        raise IOError(f"Failed to save PBR map ({pbr_type}): {result.get('message')}")
-
-                        # cleanup per-size
-                        del resized_img, base_to_save
-                        gc.collect()
-
-                # cleanup per-image
-                del img, mod_img
-                gc.collect()
-
-        zip_buffer.seek(0)
-        zip_filename = f"{package_name}.zip"
-
-        return send_file(
-            zip_buffer,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name=zip_filename
-        )
-
-    except Exception as e:
-        logger.error(f"An error occurred during pack generation: {e}", exc_info=True)
-        return jsonify({'error': 'Failed to generate asset pack', 'details': str(e)}), 500
-    finally:
-        logger.info(f"Cleaning up {len(all_temp_files)} temporary files.")
-        for fpath in all_temp_files:
-            try:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-            except Exception as e:
-                logger.error(f"Error cleaning up file {fpath}: {e}")
+    return send_file(
+        zip_buffer,
+        as_attachment=True,
+        download_name=f'{name}_asset_pack.zip',
+        mimetype='application/zip'
+    )
+    
+@app.get("/variants")
+def get_variants():
+    return jsonify(variants_data)
 
 if __name__ == "__main__":
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    port = int(os.environ.get('PORT', 8080))
+    app.run(debug=True, host='0.0.0.0', port=port)
