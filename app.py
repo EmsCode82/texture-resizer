@@ -232,84 +232,85 @@ def save_variant(img, original_name, size_str, label='base', file_format='png', 
 
 @app.post("/generate_pack")
 def generate_pack():
-    """Generates an asset pack with image variants and PBR maps, then zips them."""
+    """Reads ratio and updates resize/save logic, with optional edge padding for Base/Roughness and alpha-aware normals.
+       NOW honors variants sent from frontend: { "variants": { "options": [...] } }"""
     logger = logging.getLogger(__name__)
     logger.info("Received request for /generate_pack")
 
     # --- Auth & payload sanity ---
     api_key = request.headers.get('X-API-Key')
-    if api_key != 'mock_api_key_123': # Placeholder API key
-        logger.warning("Unauthorized access attempt to /generate_pack with invalid API key.")
+    if api_key != 'mock_api_key_123':
         return jsonify({'error': 'Unauthorized: Invalid API key'}), 401
     if not request.is_json:
-        logger.warning("Non-JSON payload received for /generate_pack.")
         return jsonify({'error': 'JSON payload required'}), 400
 
-    all_temp_files = [] # For local files created during processing
+    # --- Payload parsing ---
+    data = request.get_json(force=True)
+    image_urls = data.get('imageUrls', [])
+    package_name = data.get('packageName', f"pack_{uuid.uuid4().hex[:6]}")
+    sizes = data.get('sizes', [1024])
+    formats = data.get('formats', ['png'])
+    pbr_maps = bool(data.get('pbrMaps', False))
+    aspect_ratio = data.get('aspectRatio', None)
+
+    # Normal-map edge padding (pixels)
+    edge_padding_px = int(data.get('edgePadding', 16))
+
+    # Optional dilation for Base and Roughness
+    dilate_base = bool(data.get('dilateBase', False))
+    base_edge_padding_px = int(data.get('baseEdgePadding', edge_padding_px))
+    dilate_roughness = bool(data.get('dilateRoughness', False))
+    roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
+
+    # --- NEW: parse selected variants from payload; fall back to your default set ---
+    available_variants = set(variants_data.get('options', ['default']))
+    requested_variants = data.get('variants', {}).get('options', None)
+    if isinstance(requested_variants, list):
+        selected_variant_names = [v for v in requested_variants if v in available_variants]
+        if not selected_variant_names:
+            logger.info("No valid variants in payload; falling back to defaults.")
+            selected_variant_names = list(available_variants)
+    else:
+        selected_variant_names = list(available_variants)
+
+    if not image_urls:
+        return jsonify({'error': 'imageUrls array is required'}), 400
+
+    zip_buffer = io.BytesIO()
+    all_temp_files = []
 
     try:
-        logger.info("Starting asset pack generation process...")
-        
-        # --- Payload parsing ---
-        data = request.get_json(force=True)
-        logger.info(f"Parsed request data: {list(data.keys())}")
-        
-        image_urls = data.get('imageUrls', [])
-        package_name = data.get('packageName', f"pack_{uuid.uuid4().hex[:6]}")
-        sizes = [int(s) for s in data.get('sizes', [1024])] # Ensure sizes are ints
-        formats = data.get('formats', ['png'])
-        pbr_maps_enabled = bool(data.get('pbrMaps', False))
-        aspect_ratio = data.get('aspectRatio', None)
-
-        logger.info(f"Processing {len(image_urls)} images with sizes {sizes}, formats {formats}")
-
-        edge_padding_px = int(data.get('edgePadding', 16))
-        dilate_base = bool(data.get('dilateBase', False))
-        base_edge_padding_px = int(data.get('baseEdgePadding', edge_padding_px))
-        dilate_roughness = bool(data.get('dilateRoughness', False))
-        roughness_edge_padding_px = int(data.get('roughnessEdgePadding', edge_padding_px))
-
-        available_variants = set(variants_data.get('options', ['default']))
-        requested_variants = data.get('variants', {}).get('options', None)
-        selected_variant_names = []
-        if isinstance(requested_variants, list):
-            selected_variant_names = [v for v in requested_variants if v in available_variants]
-        if not selected_variant_names:
-            selected_variant_names = ['default'] # Always ensure at least default variant
-
-        logger.info(f"Selected variants: {selected_variant_names}")
-
-        if not image_urls:
-            logger.error("imageUrls array is required but not provided for /generate_pack.")
-            return jsonify({'error': 'imageUrls array is required'}), 400
-
-        zip_buffer = io.BytesIO()
-        
-        logger.info("Creating ZIP file...")
         with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
-            for i, url in enumerate(image_urls):
-                logger.info(f"Processing image {i+1}/{len(image_urls)}: {url}")
-                
+            for url in image_urls:
                 img, original_name = load_image_from_url(url)
                 if img is None:
-                    logger.warning(f"Failed to load image from URL: {url}, skipping.")
                     continue
 
+                # Iterate ONLY the variants selected by the frontend
                 for variant_name in selected_variant_names:
-                    logger.info(f"Processing variant: {variant_name}")
-                    mod_img = apply_color_variant(img, variant_name)
+                    mod_img = img
+                    if variant_name == 'earthy':
+                        mod_img = ImageEnhance.Color(img).enhance(0.7)
+                    elif variant_name == 'vibrant':
+                        mod_img = ImageEnhance.Color(img).enhance(1.3)
+                    elif variant_name == 'muted':
+                        mod_img = ImageEnhance.Color(img).enhance(0.5)
+                    # 'default' leaves mod_img as-is
 
                     for size_val in sizes:
+                        # -- Compute dimensions from ratio and resize --
                         dimensions = get_dimensions(size_val, aspect_ratio)
                         size_str_for_filename = f"{dimensions[0]}x{dimensions[1]}"
                         resized_img = mod_img.resize(dimensions, Image.Resampling.LANCZOS)
 
+                        # =========================
+                        # Base Color export (with optional edge dilation)
+                        # =========================
                         base_to_save = resized_img
                         if dilate_base:
                             base_to_save = dilate_rgba(resized_img.convert('RGBA'), padding=base_edge_padding_px)
 
                         for fmt in formats:
-                            logger.info(f"Saving base texture: {variant_name}, {size_str_for_filename}, {fmt}")
                             result = save_variant(
                                 base_to_save,
                                 original_name,
@@ -319,72 +320,82 @@ def generate_pack():
                                 ratio_str=aspect_ratio
                             )
                             if result['status'] == 'success':
-                                arcname = os.path.join('Textures', variant_name, 'BaseColor', result['arcname'])
-                                with open(result['path'], 'rb') as file_data:
-                                    zip_file.writestr(arcname, file_data.read())
+                                arcname = os.path.join('Textures', variant_name, result['arcname'])
+                                zip_file.write(result['path'], arcname)
                                 all_temp_files.append(result['path'])
                             else:
                                 raise IOError(f"Failed to save base texture: {result.get('message')}")
 
-                        if pbr_maps_enabled:
-                            logger.info(f"Generating PBR maps for {variant_name}")
-                            # Normal map
+                        # =========================
+                        # PBR Maps export
+                        # =========================
+                        if pbr_maps:
+                            # --- Normal map (alpha-aware + edge padding) ---
                             normal_img = generate_normal_map(resized_img, edge_padding_px=edge_padding_px)
-                            for fmt in formats:
-                                result = save_variant(
-                                    normal_img, original_name, size_str_for_filename, label=variant_name,
-                                    file_format=fmt, pbr_type='Normal', ratio_str=aspect_ratio
-                                )
-                                if result['status'] == 'success':
-                                    arcname = os.path.join('Textures', variant_name, 'Normal', result['arcname'])
-                                    with open(result['path'], 'rb') as file_data:
-                                        zip_file.writestr(arcname, file_data.read())
-                                    all_temp_files.append(result['path'])
-                                else:
-                                    raise IOError(f"Failed to save normal map: {result.get('message')}")
 
-                            # Roughness map
-                            roughness_img_L = generate_roughness_map(resized_img)
-                            roughness_to_save = roughness_img_L
+                            # --- Roughness map (optional alpha-aware dilation) ---
+                            rough_img = generate_roughness_map(resized_img)  # returns 'L'
                             if dilate_roughness:
-                                # Dilate roughness using the alpha of the base image
-                                roughness_to_save = dilate_gray_using_alpha(roughness_img_L, resized_img.getchannel('A'), padding=roughness_edge_padding_px)
-                            
-                            for fmt in formats:
-                                result = save_variant(
-                                    roughness_to_save, original_name, size_str_for_filename, label=variant_name,
-                                    file_format=fmt, pbr_type='Roughness', ratio_str=aspect_ratio
+                                alpha_from_resized = resized_img.convert('RGBA').split()[-1]
+                                rough_img = dilate_gray_using_alpha(
+                                    rough_img,
+                                    alpha_from_resized,
+                                    padding=roughness_edge_padding_px
                                 )
-                                if result['status'] == 'success':
-                                    arcname = os.path.join('Textures', variant_name, 'Roughness', result['arcname'])
-                                    with open(result['path'], 'rb') as file_data:
-                                        zip_file.writestr(arcname, file_data.read())
-                                    all_temp_files.append(result['path'])
-                                else:
-                                    raise IOError(f"Failed to save roughness map: {result.get('message')}")
-        
-        # Rewind buffer and send file
+
+                            pbr_results = {
+                                'normal': normal_img,
+                                'roughness': rough_img
+                            }
+
+                            # Save each PBR layer
+                            for pbr_type, pbr_img in pbr_results.items():
+                                for fmt in formats:
+                                    result = save_variant(
+                                        pbr_img,
+                                        original_name,
+                                        size_str_for_filename,
+                                        label=variant_name,
+                                        file_format=fmt,
+                                        pbr_type=pbr_type,
+                                        ratio_str=aspect_ratio
+                                    )
+                                    if result['status'] == 'success':
+                                        arcname = os.path.join('PBR', pbr_type.capitalize(), variant_name, result['arcname'])
+                                        zip_file.write(result['path'], arcname)
+                                        all_temp_files.append(result['path'])
+                                    else:
+                                        raise IOError(f"Failed to save PBR map ({pbr_type}): {result.get('message')}")
+
+                        # cleanup per-size
+                        del resized_img, base_to_save
+                        gc.collect()
+
+                # cleanup per-image
+                del img, mod_img
+                gc.collect()
+
         zip_buffer.seek(0)
-        logger.info(f"Successfully generated asset pack: {package_name}.zip")
+        zip_filename = f"{package_name}.zip"
+
         return send_file(
             zip_buffer,
-            download_name=f"{package_name}.zip",
+            mimetype='application/zip',
             as_attachment=True,
-            mimetype="application/zip"
+            download_name=zip_filename
         )
 
     except Exception as e:
-        logger.exception("Asset pack generation failed due to an unhandled exception:") # Log the full traceback
-        return jsonify({'error': f'Backend service error: {type(e).__name__}: {e}. Please check server logs for details.'}), 500
-    
+        logger.error(f"An error occurred during pack generation: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to generate asset pack', 'details': str(e)}), 500
     finally:
-        # Clean up temporary files
+        logger.info(f"Cleaning up {len(all_temp_files)} temporary files.")
         for fpath in all_temp_files:
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up temporary file {fpath}: {cleanup_error}")
+            except Exception as e:
+                logger.error(f"Error cleaning up file {fpath}: {e}")
 
 # --- Stability AI & Upload Configuration ---
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
