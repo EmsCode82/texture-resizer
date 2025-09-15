@@ -11,6 +11,7 @@ from scipy.ndimage import convolve, distance_transform_edt
 from zipfile import ZipFile, ZIP_DEFLATED
 import gc
 import logging
+import base64
 
 # --- Basic Setup ---
 app = Flask(__name__)
@@ -466,6 +467,10 @@ def generate_image():
         cfg_scale = data.get('cfg_scale', 7)
         steps = data.get('steps', 30)
 
+        # Log received parameters for debugging
+        logger.info(f"Operation: {operation}, Prompt: {prompt[:50] if prompt else 'None'}...")
+        logger.info(f"Denoising Strength: {denoising_strength}, CFG Scale: {cfg_scale}, Steps: {steps}")
+
         # Text-to-Image Operation
         if operation == 'text-to-image':
             api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/text-to-image"
@@ -479,8 +484,11 @@ def generate_image():
                 "steps": steps,
             }
             if negative_prompt:
-                payload["text_prompts[0][negative_text]"] = negative_prompt
+                payload["text_prompts[0][weight]"] = 1.0
+                payload["text_prompts[1][text]"] = negative_prompt
+                payload["text_prompts[1][weight]"] = -1.0
             
+            logger.info(f"Sending text-to-image request with payload: {payload}")
             response = requests.post(
                 api_url, 
                 headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, 
@@ -501,6 +509,7 @@ def generate_image():
             
             try:
                 # Download the base image
+                logger.info(f"Downloading base image from: {init_image_url}")
                 init_img_resp = requests.get(init_image_url, timeout=20)
                 init_img_resp.raise_for_status()
                 init_image_path = os.path.join(temp_dir, "init_image.png")
@@ -510,18 +519,23 @@ def generate_image():
                 payload_files = {"init_image": open(init_image_path, "rb")}
                 payload_data = {
                     "text_prompts[0][text]": prompt,
+                    "text_prompts[0][weight]": 1.0,
                     "cfg_scale": cfg_scale,
                     "samples": 1,
-                    "steps": steps
+                    "steps": steps,
+                    "image_strength": denoising_strength  # This is critical for both enhance and inpaint
                 }
+                
                 if negative_prompt:
-                    payload_data["text_prompts[0][negative_text]"] = negative_prompt
+                    payload_data["text_prompts[1][text]"] = negative_prompt
+                    payload_data["text_prompts[1][weight]"] = -1.0
 
                 if operation == 'inpaint':
                     mask_image_url = data.get('mask_image_url')
                     if not mask_image_url:
                         return jsonify({"error": "Mask image URL is required for inpainting."}), 400
                     
+                    logger.info(f"Downloading mask image from: {mask_image_url}")
                     mask_img_resp = requests.get(mask_image_url, timeout=20)
                     mask_img_resp.raise_for_status()
                     mask_image_path = os.path.join(temp_dir, "mask_image.png")
@@ -530,11 +544,11 @@ def generate_image():
                     
                     payload_files["mask_image"] = open(mask_image_path, "rb")
                     payload_data["mask_source"] = "MASK_IMAGE_BLACK"
-                    payload_data["image_strength"] = denoising_strength
                     api_url = f"{STABILITY_HOST}/v1/generation/stable-inpainting-512-v2-0/image-to-image/masking"
+                    logger.info(f"Sending inpainting request with payload_data: {payload_data}")
                 else:
-                    payload_data["image_strength"] = denoising_strength
                     api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image"
+                    logger.info(f"Sending image-to-image (enhance) request with payload_data: {payload_data}")
 
                 response = requests.post(
                     api_url, 
@@ -563,13 +577,22 @@ def generate_image():
             return jsonify({"error": f"Invalid operation: {operation}"}), 400
 
         # Process Response
+        logger.info(f"Stability AI API response status: {response.status_code}")
         if response.status_code != 200:
             logger.error(f"Stability AI API error: {response.status_code} - {response.text}")
-            return jsonify({"error": "Failed to generate image.", "details": response.text}), response.status_code
+            error_details = response.text
+            try:
+                error_json = response.json()
+                if 'message' in error_json:
+                    error_details = error_json['message']
+            except:
+                pass
+            return jsonify({"error": "Failed to generate image.", "details": error_details}), response.status_code
 
         # For Stability AI, the image data is typically Base64 encoded in the JSON response
         response_json = response.json()
         if not response_json.get("artifacts"):
+            logger.error(f"No artifacts in response: {response_json}")
             return jsonify({"error": "No image artifacts found in Stability AI response."}), 500
             
         # Assuming we only care about the first artifact
