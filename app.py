@@ -398,5 +398,184 @@ def generate_pack():
             except Exception as e:
                 logger.error(f"Error cleaning up file {fpath}: {e}")
 
+
+# --- NEW: Stability AI & Upload Configuration ---
+STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
+STABILITY_HOST = "https://api.stability.ai"
+TEMP_UPLOAD_DIR = "temp_uploads"
+os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
+
+# --- NEW: Endpoint to Serve Generated & Uploaded Files ---
+@app.route('/files/<path:filename>')
+def serve_file(filename):
+    """Serves a file from either the OUTPUT_DIR or TEMP_UPLOAD_DIR."""
+    logger = logging.getLogger(__name__)
+    # Check in output directory first
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    if os.path.exists(output_path):
+        logger.debug(f"Serving file from output: {output_path}")
+        return send_file(output_path)
+    
+    # Check in temp directory if not found in output
+    temp_path = os.path.join(TEMP_UPLOAD_DIR, filename)
+    if os.path.exists(temp_path):
+        logger.debug(f"Serving file from temp: {temp_path}")
+        return send_file(temp_path)
+        
+    logger.warning(f"File not found: {filename}")
+    return jsonify({"error": "File not found"}), 404
+
+# --- NEW: Endpoint to Handle Temporary File Uploads ---
+@app.post("/upload_file")
+def upload_file():
+    """Handles file uploads from the frontend and returns a URL."""
+    logger = logging.getLogger(__name__)
+    if 'file' not in request.files:
+        logger.error("No file part in request to /upload_file")
+        return jsonify({'error': 'No file part in the request'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected for uploading'}), 400
+
+    if file:
+        filename = f"temp_{uuid.uuid4().hex[:12]}_{file.filename}"
+        save_path = os.path.join(TEMP_UPLOAD_DIR, filename)
+        file.save(save_path)
+        
+        file_url = f"{request.host_url}files/{filename}"
+        logger.info(f"File uploaded successfully: {file_url}")
+        return jsonify({'file_url': file_url})
+    
+    return jsonify({'error': 'File upload failed'}), 500
+
+# --- NEW: Main Image Generation Endpoint ---
+@app.post("/generate_image")
+def generate_image():
+    """Handles text-to-image, image-to-image (enhance), and inpainting."""
+    logger = logging.getLogger(__name__)
+    if not STABILITY_API_KEY:
+        logger.error("Stability AI API key is not configured.")
+        return jsonify({"error": "Image generation service is not configured."}), 503
+
+    try:
+        data = request.get_json(force=True)
+        operation = data.get('operation', 'text-to-image')
+        prompt = data.get('prompt')
+        negative_prompt = data.get('negative_prompt', None)
+        aspect_ratio = data.get('aspect_ratio', '1:1')
+        denoising_strength = data.get('denoising_strength', 0.75)
+        cfg_scale = data.get('cfg_scale', 7)
+        steps = data.get('steps', 30)
+
+        # Text-to-Image Operation
+        if operation == 'text-to-image':
+            api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/text-to-image"
+            width, height = get_dimensions(1024, aspect_ratio)
+            payload = {
+                "text_prompts[0][text]": prompt,
+                "cfg_scale": cfg_scale, 
+                "width": width, 
+                "height": height,
+                "samples": 1, 
+                "steps": steps,
+            }
+            if negative_prompt:
+                payload["text_prompts[0][negative_text]"] = negative_prompt
+            
+            response = requests.post(
+                api_url, 
+                headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, 
+                data=payload
+            )
+
+        # Image-to-Image & Inpainting Operations
+        elif operation in ['enhance', 'inpaint']:
+            init_image_url = data.get('init_image_url')
+            if not init_image_url:
+                return jsonify({"error": "Base image URL is required."}), 400
+            
+            temp_dir = os.path.join(TEMP_UPLOAD_DIR, f"req_{uuid.uuid4().hex[:8]}")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            init_image_path = None
+            mask_image_path = None
+            
+            try:
+                # Download the base image
+                init_img_resp = requests.get(init_image_url, timeout=20)
+                init_img_resp.raise_for_status()
+                init_image_path = os.path.join(temp_dir, "init_image.png")
+                with open(init_image_path, 'wb') as f:
+                    f.write(init_img_resp.content)
+
+                payload_files = {"init_image": open(init_image_path, "rb")}
+                payload_data = {
+                    "text_prompts[0][text]": prompt,
+                    "cfg_scale": cfg_scale,
+                    "samples": 1,
+                    "steps": steps
+                }
+                if negative_prompt:
+                    payload_data["text_prompts[0][negative_text]"] = negative_prompt
+
+                if operation == 'inpaint':
+                    mask_image_url = data.get('mask_image_url')
+                    if not mask_image_url:
+                        return jsonify({"error": "Mask image URL is required for inpainting."}), 400
+                    
+                    mask_img_resp = requests.get(mask_image_url, timeout=20)
+                    mask_img_resp.raise_for_status()
+                    mask_image_path = os.path.join(temp_dir, "mask_image.png")
+                    with open(mask_image_path, 'wb') as f:
+                        f.write(mask_img_resp.content)
+                    
+                    payload_files["mask_image"] = open(mask_image_path, "rb")
+                    payload_data["mask_source"] = "MASK_IMAGE_BLACK"
+                    payload_data["image_strength"] = denoising_strength
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-inpainting-512-v2-0/image-to-image/masking"
+                else:
+                    payload_data["image_strength"] = denoising_strength
+                    api_url = f"{STABILITY_HOST}/v1/generation/stable-diffusion-v1-6/image-to-image"
+
+                response = requests.post(
+                    api_url, 
+                    headers={"Authorization": f"Bearer {STABILITY_API_KEY}"}, 
+                    files=payload_files,
+                    data=payload_data
+                )
+
+            finally:
+                for f in payload_files.values():
+                    if hasattr(f, 'close'):
+                        f.close()
+                if os.path.exists(temp_dir):
+                    if init_image_path and os.path.exists(init_image_path): 
+                        os.remove(init_image_path)
+                    if mask_image_path and os.path.exists(mask_image_path): 
+                        os.remove(mask_image_path)
+                    os.rmdir(temp_dir)
+
+        else:
+            return jsonify({"error": f"Invalid operation: {operation}"}), 400
+
+        # Process Response
+        if response.status_code != 200:
+            logger.error(f"Stability AI API error: {response.status_code} - {response.text}")
+            return jsonify({"error": "Failed to generate image.", "details": response.text}), response.status_code
+
+        output_filename = f"gen_{uuid.uuid4().hex[:12]}.png"
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        with open(output_path, "wb") as f:
+            f.write(response.content)
+
+        final_url = f"{request.host_url}files/{output_filename}"
+        logger.info(f"Image generated successfully: {final_url}")
+        return jsonify({"url": final_url})
+
+    except Exception as e:
+        logger.error(f"Error in /generate_image: {e}", exc_info=True)
+        return jsonify({'error': 'Internal server error.', 'details': str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
