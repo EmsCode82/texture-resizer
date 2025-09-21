@@ -12,6 +12,8 @@ import base64
 import logging
 import requests
 import numpy as np
+import send_from_directory
+
 from zipfile import ZipFile, ZIP_DEFLATED
 from scipy.ndimage import convolve, distance_transform_edt
 
@@ -236,6 +238,77 @@ def save_variant(img, original_name, size_str, label="base", file_format="png", 
         logger.error(f"Failed to save variant {original_name} ({label}, {size_str}): {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
     
+def nearest_pow2(n: int) -> int:
+    p = 1
+    while p < n: p <<= 1
+    return p
+
+def parse_ratio(r: str):
+    parts = r.split(":")
+    if len(parts) != 2: return None
+    try:
+        a = int(parts[0]); b = int(parts[1])
+        if a <= 0 or b <= 0: return None
+        return (a, b)
+    except:
+        return None
+
+def to_pow2(n: int):
+    lower = 1 << (n.bit_length() - 1)
+    upper = lower << 1
+    return lower if (n - lower) <= (upper - n) else upper
+
+def size_from_ratio_long(ratio_tuple, long_side):
+    a, b = ratio_tuple
+    if a >= b:
+        w = long_side; h = round(long_side * b / a)
+    else:
+        h = long_side; w = round(long_side * a / b)
+    return (w, h)
+
+def load_image_from_request():
+    """Accepts multipart 'file' OR JSON/form {'imageUrl': ...} just like the old app."""
+    # Try file first
+    if 'file' in request.files and request.files['file'].filename:
+        f = request.files['file']
+        try:
+            img = Image.open(f.stream).convert('RGBA')
+            return img, f.filename
+        except Exception as e:
+            return None, f"Invalid image file: {e}"
+
+    # Try URL from JSON or form
+    url = None
+    if request.is_json:
+        url = (request.json or {}).get('imageUrl')
+    if not url:
+        url = request.form.get('imageUrl')
+    if not url:
+        return None, "Provide an uploaded file (field 'file') or 'imageUrl'."
+
+    img, name = load_image_from_url(url)
+    if img is None:
+        return None, "Failed to download or read image."
+    return img, name
+
+def _fit_crop_stretch(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
+    if mode == "stretch":
+        return img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    elif mode == "crop":
+        scale = max(target_w / img.width, target_h / img.height)
+        new_w, new_h = int(img.width * scale), int(img.height * scale)
+        scaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        x1 = (new_w - target_w) // 2
+        y1 = (new_h - target_h) // 2
+        return scaled.crop((x1, y1, x1 + target_w, y1 + target_h))
+    else:  # fit
+        fitted = ImageOps.contain(img, (target_w, target_h), Image.Resampling.LANCZOS)
+        out = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+        x = (target_w - fitted.width) // 2
+        y = (target_h - fitted.height) // 2
+        out.paste(fitted, (x, y))
+        return out
+
 @app.get("/")
 def index():
     return """
@@ -600,6 +673,207 @@ document.getElementById('btnBatch').addEventListener('click', async (e)=>{
 </body>
 </html>
     """
+
+@app.post("/resize")
+def resize_endpoint():
+    img, original_name_or_err = load_image_from_request()
+    if img is None:
+        return jsonify({"error": original_name_or_err}), 400
+    original_name = original_name_or_err
+
+    size_param = request.args.get("size")
+    download = request.args.get("download", "0") == "1"
+    width = request.args.get("width")
+    height = request.args.get("height")
+    ratio = request.args.get("ratio")
+    long_ = request.args.get("long")
+    mode = request.args.get("mode", "fit")
+    fmt = (request.args.get("format") or "png").lower()
+    if fmt not in ("png", "tga", "jpeg", "jpg", "webp"):
+        return jsonify({"error": "format must be one of png,tga,jpeg,webp"}), 400
+
+    # Determine target size
+    if width and height:
+        try:
+            target_w, target_h = int(width), int(height)
+        except ValueError:
+            return jsonify({"error": "width/height must be integers"}), 400
+    elif ratio and long_:
+        rt = parse_ratio(ratio)
+        if not rt: return jsonify({"error": "Invalid ratio. Use ratio=16:9"}), 400
+        try:
+            long_side = int(long_)
+        except ValueError:
+            return jsonify({"error": "long must be an integer"}), 400
+        target_w, target_h = size_from_ratio_long(rt, long_side)
+    elif size_param:
+        if size_param == "pow2":
+            s = nearest_pow2(max(img.width, img.height))
+        else:
+            try:
+                s = int(size_param)
+            except ValueError:
+                return jsonify({"error": "size must be an integer or 'pow2'"}), 400
+        target_w = target_h = s
+    else:
+        return jsonify({"error": "Provide size OR width+height OR ratio+long"}), 400
+
+    if request.args.get("pow2", "0") == "1":
+        target_w = to_pow2(target_w); target_h = to_pow2(target_h)
+
+    out = _fit_crop_stretch(img, target_w, target_h, mode)
+    size_str = f"{target_w}x{target_h}"
+    res = save_variant(out, original_name, size_str, label=request.args.get("label") or "base",
+                       file_format=fmt, ratio_str=request.args.get("ratio"))
+    if res["status"] != "success":
+        return jsonify({"error": res.get("message", "Save failed")}), 500
+
+    path = res["path"]; fname = res["arcname"]
+    if download:
+        return send_file(path, as_attachment=True, download_name=fname)
+
+    bytes_ = os.path.getsize(path)
+    return jsonify({
+        "public_url": f"{request.host_url.rstrip('/')}/files/{fname}",
+        "optimized_path": os.path.abspath(path),
+        "width": out.width,
+        "height": out.height,
+        "format": fmt,
+        "file_size_bytes": bytes_,
+        "file_size_mb": round(bytes_ / (1024*1024), 3)
+    })
+
+@app.post("/batch")
+def batch():
+    img, original_name_or_err = load_image_from_request()
+    if img is None:
+        return jsonify({"error": original_name_or_err}), 400
+    original_name = original_name_or_err
+
+    sizes_param = request.args.get("sizes") or "512,1024,2048,4096"
+    formats_param = request.args.get("formats", "png")
+    mode = request.args.get("mode", "fit")
+    pow2 = request.args.get("pow2", "0") == "1"
+    label = request.form.get("label") or request.args.get("label") or "base"
+
+    try:
+        sizes = [int(s.strip()) for s in sizes_param.split(",") if s.strip()]
+    except:
+        return jsonify({"error": "Invalid sizes. Example: sizes=512,1024,2048"}), 400
+    if pow2:
+        sizes = [to_pow2(s) for s in sizes]
+
+    valid_ext = {"png","tga","jpeg","webp"}
+    formats = [f.strip().lower() for f in formats_param.split(",") if f.strip().lower() in valid_ext]
+    if not formats:
+        return jsonify({"error": "No valid formats. Use formats=png,tga,jpeg,webp"}), 400
+
+    results = {fmt:{} for fmt in formats}
+    for s in sizes:
+        w = h = s
+        out = _fit_crop_stretch(img, w, h, mode)
+        size_str = f"{w}x{h}"
+        for fmt in formats:
+            res = save_variant(out, original_name, size_str, label=label, file_format=fmt)
+            if res["status"] != "success":
+                return jsonify({"error": res.get("message","Save failed")}), 500
+            bytes_ = os.path.getsize(res["path"])
+            results[fmt][size_str] = {
+                "url": f"{request.host_url.rstrip('/')}/files/{res['arcname']}",
+                "bytes": bytes_,
+                "mb": round(bytes_/(1024*1024),3)
+            }
+    return jsonify({"ok": True, "results": results})
+
+
+@app.post("/profile/gameasset")
+def profile_gameasset():
+    # Convenience wrapper: sizes 512..4096, formats png+tga
+    request_args = request.args.to_dict(flat=True)
+    request_args.setdefault("sizes", "512,1024,2048,4096")
+    request_args.setdefault("formats", "png,tga")
+    with app.test_request_context(
+        "/batch", method="POST", json=request.get_json(silent=True), data=(request.form or None), query_string=request_args
+    ):
+        return batch()
+
+
+@app.post("/validate")
+def validate_endpoint():
+    img, original_name_or_err = load_image_from_request()
+    if img is None:
+        return jsonify({"error": original_name_or_err}), 400
+
+    issues = []
+    array = np.array(img)
+    if img.mode == 'RGBA':
+        alpha = array[:, :, 3]
+        if np.all(alpha == 255):
+            issues.append("Alpha channel is fully opaque – consider RGB for optimization.")
+        elif np.any(alpha < 255) and np.mean(alpha[alpha < 255]) < 128:
+            issues.append("Semi-transparent areas detected – ensure engine supports alpha blending.")
+        transparent_ratio = np.sum(alpha == 0) / alpha.size
+        if transparent_ratio > 0.9:
+            issues.append("Over 90% transparent – ensure this is intentional.")
+
+    h, w = array.shape[:2]
+    if h > 1 and w > 1:
+        left = array[:, 0, :3]; right = array[:, -1, :3]
+        top  = array[0, :, :3]; bottom = array[-1, :, :3]
+        if np.mean(np.abs(left - right)) > 20:
+            issues.append("Potential vertical seam – may not tile seamlessly.")
+        if np.mean(np.abs(top - bottom)) > 20:
+            issues.append("Potential horizontal seam – may not tile seamlessly.")
+
+    gray = np.array(img.convert('L'))
+    variance = np.var(gray)
+    if variance > 10000:
+        issues.append("High variance – possible artifacts/noise.")
+
+    if img.width != to_pow2(img.width) or img.height != to_pow2(img.height):
+        issues.append("Non-power-of-two dimensions detected.")
+
+    return jsonify({"ok": len(issues)==0, "issues": issues, "warnings": [] if issues else ["Texture passes basic validation."]})
+
+
+@app.post("/package")
+def package_endpoint():
+    # Build a quick pack zip from /profile/gameasset results.
+    # Reuse /batch to generate files, then zip them.
+    img, name_or_err = load_image_from_request()
+    if img is None: return jsonify({"error": name_or_err}), 400
+
+    # Generate defaults via in-memory call to /batch
+    with app.test_request_context(
+        "/batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit",
+        method="POST", json=request.get_json(silent=True), data=(request.form or None)
+    ):
+        resp = batch()
+    if resp.status_code != 200:
+        return resp
+    payload = resp.get_json()
+    if not payload.get("ok"):
+        return jsonify({"error":"Batch failed"}), 500
+
+    # Collect files
+    file_paths = []
+    for fmt, sizes in payload["results"].items():
+        for _, info in sizes.items():
+            url = info["url"]
+            fname = url.split("/files/")[-1]
+            path = os.path.join(OUTPUT_DIR, fname)
+            if os.path.exists(path):
+                file_paths.append(path)
+
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zipf:
+        for p in file_paths:
+            arc_dir = "Textures"
+            zipf.write(p, os.path.join(arc_dir, os.path.basename(p)))
+    zip_buffer.seek(0)
+
+    zip_name = f"asset_pack_{uuid.uuid4().hex[:8]}.zip"
+    return send_file(zip_buffer, mimetype="application/zip", as_attachment=True, download_name=zip_name)
 
 # -----------------------------------------------------------------------------
 # Asset pack endpoint
