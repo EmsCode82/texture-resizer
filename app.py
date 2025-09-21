@@ -314,365 +314,187 @@ def index():
     return """
 <!doctype html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>Assetgineer Texture Service</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root{--b:#111;--t:#fff;--muted:#666;}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;margin:40px auto;padding:0 16px;line-height:1.55}
-    .grid{display:grid;gap:12px}
-    @media(min-width:720px){.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}}
-    .card{border:1px solid #eee;border-radius:12px;padding:14px}
-    label{font-weight:600;margin:8px 0 6px;display:block}
-    input,select,button{width:100%;padding:10px;border:1px solid #ddd;border-radius:10px}
-    button{background:var(--b);color:var(--t);cursor:pointer}
-    button.secondary{background:#f5f5f5;color:#111;border-color:#eee}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    .muted{color:var(--muted)}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .links{display:flex;gap:10px}
-    .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#f3f3f3;border:1px solid #e9e9e9}
-    .ok{background:#f7f7f7;border-radius:12px;padding:12px;margin-top:10px}
-    .error{color:#b00020;margin-top:8px}
-  </style>
-</head>
-<body>
-  <h1>Assetgineer Texture Service</h1>
-  <p class="muted">Upload a file or paste an image URL. Then run a custom resize or export a full PNG/TGA pack (PoT sizes). This page only calls your existing endpoints; it won’t affect Base44.</p>
+  <head><meta charset="utf-8"><title>Assetgineer Texture Service</title></head>
+  <body style="font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; line-height:1.6;">
+    <h1>Assetgineer Texture Service</h1>
 
-  <form id="ioForm" method="post" enctype="multipart/form-data" class="grid g2 card">
-    <div>
-      <label>Upload image</label>
-      <input type="file" name="file" accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tga">
-    </div>
-    <div>
-      <label>OR Image URL</label>
-      <input type="url" name="imageUrl" id="imageUrl" placeholder="https://example.com/image.png">
-    </div>
-    <div>
-      <label>Pack <span class="muted">(optional)</span></label>
-      <input type="text" name="pack" id="pack" placeholder="Characters">
-    </div>
-    <div>
-      <label>Race <span class="muted">(optional)</span></label>
-      <input type="text" name="race" id="race" placeholder="Human">
-    </div>
-    <div>
-      <label>Label <span class="muted">(optional)</span></label>
-      <input type="text" name="label" id="label" placeholder="DesertRogue">
-    </div>
-  </form>
+    <form method="post" enctype="multipart/form-data">
+      <p><label>Upload image: <input type="file" name="file" accept=".png,.jpg,.jpeg,.tga" required></label></p>
+      <p><label>Pack name: <input type="text" name="pack" required pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
+      <p><label>Race (optional): <input type="text" name="race" pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
+      <p><label>Label (optional): <input type="text" name="label" pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
+      <p><label>OR Image URL: <input type="url" name="imageUrl" placeholder="https://example.com/image.png" style="width:100%;"></label></p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">
+        <button formaction="/resize?size=512" formmethod="post" formtarget="_blank">Resize to 512</button>
+        <button formaction="/resize?size=1024" formmethod="post" formtarget="_blank">Resize to 1024</button>
+        <button formaction="/resize?size=2048" formmethod="post" formtarget="_blank">Resize to 2048</button>
+        <button formaction="/resize?size=4096" formmethod="post" formtarget="_blank">Resize to 4096</button>
+        <button formaction="/resize?size=pow2" formmethod="post" formtarget="_blank">Resize to POW2</button>
+        <button formaction="/batch" formmethod="post" formtarget="_blank">Batch</button>
+        <button formaction="/profile/gameasset" formmethod="post" formtarget="_blank" style="background:#222; color:#fff;">GameAsset Pack</button>
+        <button formaction="/profile/gameasset?pbr=1" formmethod="post" formtarget="_blank" style="background:#444; color:#fff;">GameAsset Pack with PBR</button>
+        <button formaction="/validate" formmethod="post" formtarget="_blank" style="background:#007bff; color:#fff;">Validate Image</button>
+        <button formaction="/package?pbr=1" formmethod="post" formtarget="_blank" style="background:#28a745; color:#fff;">Download Pack as Zip</button>
+      </div>      
+    </form>
 
-  <!-- Quick buttons (download-ready) -->
-  <div class="card">
-    <h3>Quick download</h3>
-    <div class="row">
-      <button form="ioForm" formaction="/resize?size=512&download=1" formmethod="post" formtarget="_blank">Resize 512</button>
-      <button form="ioForm" formaction="/resize?size=1024&download=1" formmethod="post" formtarget="_blank">Resize 1024</button>
-      <button form="ioForm" formaction="/resize?size=2048&download=1" formmethod="post" formtarget="_blank">Resize 2048</button>
-      <button form="ioForm" formaction="/resize?size=4096&download=1" formmethod="post" formtarget="_blank">Resize 4096</button>
-      <button class="secondary" form="ioForm" formaction="/resize?size=pow2&download=1" formmethod="post" formtarget="_blank">Resize POW2</button>
-    </div>
-    <p class="muted">These open the processed file directly.</p>
-  </div>
+    <hr style="margin:28px 0;">
 
-  <!-- Custom resize with controls -->
-  <div class="card grid g3">
-    <div>
-      <label>Mode</label>
-      <select id="r_mode">
-        <option value="fit" selected>fit (pad transparency)</option>
-        <option value="crop">crop (fill frame)</option>
-        <option value="stretch">stretch (force)</option>
-      </select>
-    </div>
-    <div>
-      <label>Format</label>
-      <select id="r_format">
-        <option value="png" selected>png</option>
-        <option value="tga">tga</option>
-      </select>
-    </div>
-    <div>
-      <label class="row" style="align-items:center;gap:8px"><input type="checkbox" id="r_pow2"> <span>Round each side to nearest PoT</span></label>
-    </div>
+    <h2>ℹ️ What This Tool Does</h2>
+    <p>
+    This tool takes <b>any common image format</b> you upload (PNG, JPG, JPEG, GIF, BMP, WebP, etc.) 
+    and automatically prepares it for use in games or digital projects. No matter the input, 
+    your images are normalized to <code>RGBA</code> and exported in <b>PNG</b> or <b>TGA</b> format.
+    It also generates basic PBR maps (normal and roughness) and validates textures for common issues.
+    Use the <code>Compressed</code> options to reduce file sizes without quality loss.
+    </p>
 
-    <div>
-      <label>Square size</label>
-      <input id="r_size" type="number" min="64" max="8192" step="64" placeholder="e.g. 1024">
-    </div>
-    <div>
-      <label>Width × Height</label>
-      <input id="r_wh" placeholder="e.g. 2048x1024">
-    </div>
-    <div>
-      <label>Ratio & long edge</label>
-      <input id="r_ratio_long" placeholder="e.g. 16:9 @ 2048  (type: 16:9@2048)">
-    </div>
+    <h3>How It Works</h3>
+    <ul>
+    <li><b>Upload a file</b> (any format) or paste an image link.</li>
+    <li><b>Pick a size</b> — for example 512, 1024, 2048, or 4096 pixels.</li>
+    <li>The tool will <b>resize and clean up</b> your image automatically.</li>
+    <li>Optionally generate PBR maps (normal from edges, roughness from inverted grayscale).</li>
+    <li>Validate for issues like seams, alpha problems, or artifacts.</li>
+    <li>You can also create a whole <b>pack of images</b> in different sizes with one click, with compression available.</li>
+    </ul>
 
-    <div class="row" style="grid-column:1/-1">
-      <button id="btnResizeJson">Run Custom Resize (show JSON)</button>
-      <button class="secondary" id="btnResizeDownload">Run Custom Resize (download)</button>
-    </div>
-    <div id="resizeOut" class="ok" style="display:none"></div>
-    <div id="resizeErr" class="error"></div>
-    <p class="muted" style="grid-column:1/-1">Tip: provide exactly one sizing style (Square OR Width×Height OR Ratio@Long). If multiple are set, square takes priority, then width×height, then ratio.</p>
-  </div>
+    <h3>Why It’s Useful</h3>
+    <ul>
+    <li>Accepts almost any image format as input, even if your source isn’t already PNG.</li>
+    <li>Makes sure outputs are game-ready in <code>PNG</code> and <code>TGA</code> formats only.</li>
+    <li>Automatically keeps transparency (so backgrounds stay clear).</li>
+    <li>Organizes filenames with labels you provide (like pack, race, or item name).</li>
+    <li>Generates basic PBR maps (normal, roughness) for modern rendering in Unity/Unreal.</li>
+    <li>Validates textures for quality issues, helping ensure marketplace compliance.</li>
+    <li>Offers compression to reduce file sizes, improving download and storage efficiency.</li>
+    </ul>
 
-  <!-- Pack exporter -->
-  <div class="card grid g3">
-    <div>
-      <label>Sizes (comma PoT)</label>
-      <input id="p_sizes" value="512,1024,2048,4096">
-    </div>
-    <div>
-      <label>Formats</label>
-      <div class="row">
-        <label class="pill"><input type="checkbox" id="p_png" checked> PNG</label>
-        <label class="pill"><input type="checkbox" id="p_tga" checked> TGA</label>
-      </div>
-    </div>
-    <div>
-      <label>Mode</label>
-      <select id="p_mode">
-        <option value="fit" selected>fit</option>
-        <option value="crop">crop</option>
-        <option value="stretch">stretch</option>
-      </select>
-    </div>
-    <div class="row" style="align-items:center;gap:8px">
-      <label class="pill"><input type="checkbox" id="p_pow2"> pow2 (round each size)</label>
-    </div>
+    <h3>Example</h3>
+    <ol>
+    <li>You upload <code>dragon.jpg</code> or <code>dragon.png</code>.</li>
+    <li>You press <b>GameAsset Pack with PBR</b>.</li>
+    <li>You instantly get 4 versions: 512, 1024, 2048, and 4096.</li>
+    <li>Each version includes base PNG/TGA plus normal and roughness maps, with direct download links.</li>
+    <li>Press <b>Validate Image</b> to check for issues like seams or noise.</li>
+    </ol>
 
-    <div class="row" style="grid-column:1/-1">
-      <button id="btnPack">Export Pack (JSON links)</button>
-      <button class="secondary" id="btnBatch">Batch (defaults; JSON)</button>
-    </div>
-    <div id="packOut" class="ok" style="display:none"></div>
-    <div id="packErr" class="error"></div>
-  </div>
+    <hr style="margin:28px 0;">
 
-  <div class="card">
-    <h3>API quick ref</h3>
-    <pre>
-POST /resize?size=512|1024|2048|4096|pow2
-     &mode=fit|crop|stretch
-     &format=png|tga
-     &pack=&race=&label=
-     &download=0|1
+    <h2>📘 Service Documentation</h2>
 
-POST /batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit
-POST /profile/gameasset   (PNG+TGA, sizes 512–4096)
+    <h3>Overview</h3>
+    <p>
+    This service is a <b>Flask-based image processing pipeline</b> for preparing 
+    <b>game-ready textures</b>. It accepts <b>any common input format</b> 
+    (PNG, JPG, JPEG, GIF, BMP, WebP, etc.), normalizes them to <code>RGBA</code>, 
+    and exports clean, consistent <code>PNG</code> or <code>TGA</code> files. 
+    It supports power-of-two constraints, batch generation, optional metadata tagging,
+    basic PBR map generation (normal and roughness approximations), quality validation,
+    and optional compression for PNG outputs.
+    </p>
 
-Body for all:
-- multipart/form-data with file "file", or
-- JSON: {"imageUrl": "https://…"}
+    <h3>1. Input Handling</h3>
+    <ul>
+    <li><b>File Upload</b>: via form field <code>file</code></li>
+    <li><b>Image URL</b>: JSON <code>{"imageUrl": "https://..."}</code> or form field <code>imageUrl</code></li>
+    <li>All inputs automatically normalized to <code>RGBA</code> (keeps transparency)</li>
+    <li>Original filename is preserved in the output, combined with metadata and a unique ID</li>
+    </ul>
+
+    <h3>2. Resizing Endpoint <code>/resize</code></h3>
+    <p>Choose exactly one sizing method:</p>
+    <ul>
+    <li><code>?size=N</code> → exact square (512, 1024, 2048, 4096)</li>
+    <li><code>?size=pow2</code> → next power-of-two of the image’s largest side</li>
+    <li><code>?width=W&height=H</code> → explicit rectangle</li>
+    <li><code>?ratio=A:B&long=N</code> → maintain ratio, scale longest side</li>
+    </ul>
+    <p>Options:</p>
+    <ul>
+    <li><code>&mode=fit|crop|stretch</code> (default: fit)</li>
+    <li><code>&pow2=1</code> → round each side individually to nearest power-of-two</li>
+    <li><code>&pack=&race=&label=</code> → optional metadata in filenames</li>
+    <li><code>&download=1</code> → return file directly instead of JSON</li>
+    <li><code>&compress=1</code> → optimize PNG files for smaller size</li>
+    </ul>
+
+    <h3>3. Batch Endpoint <code>/batch</code></h3>
+    <p>Generate multiple variants at once:</p>
+    <ul>
+    <li>Default sizes: 512, 1024, 2048, 4096</li>
+    <li>Default formats: PNG (can also include TGA)</li>
+    <li>All variants share the same mode/flags</li>
+    <li>Add <code>&pbr=1</code> for normal/roughness maps</li>
+    <li>Add <code>&compress=1</code> for optimized PNGs</li>
+    </ul>
+    <p>Returns JSON: format → size → {URL, file size in bytes/MB}; plus 'pbr' key if enabled</p>
+
+    <h3>4. GameAsset Profile <code>/profile/gameasset</code></h3>
+    <ul>
+    <li>Convenience wrapper around <code>/batch</code></li>
+    <li>Defaults: sizes = 512,1024,2048,4096 | formats = PNG,TGA | mode = fit</li>
+    <li>Add <code>&pbr=1</code> for PBR maps</li>
+    <li>Add <code>&compress=1</code> for optimized PNGs</li>
+    <li>One-click export of complete game-ready texture packs</li>
+    </ul>
+
+    <h3>5. PBR Generation</h3>
+    <p>Opt-in with <code>&pbr=1</code> on /batch or /profile/gameasset. Generates:</p>
+    <ul>
+    <li>Normal map: Approximated from edges using Sobel filters (RGB PNG).</li>
+    <li>Roughness map: Simple inverted grayscale (RGB PNG).</li>
+    <li>Note: These are basic approximations; for production, use dedicated tools.</li>
+    <li>PNG outputs can be compressed with <code>&compress=1</code></li>
+    </ul>
+
+    <h3>6. Validate Endpoint <code>/validate</code></h3>
+    <p>Checks input image for common texture issues. Same input as other endpoints.</p>
+    <ul>
+    <li>Returns JSON: {ok: true/false, issues: [...], warnings: [...]}</li>
+    <li>Checks: Alpha problems, potential seams (for tiling), high variance (artifacts/noise).</li>
+    </ul>
+
+    <h3>7. Output</h3>
+    <ul>
+    <li>All outputs saved under <code>output/</code> folder</li>
+    <li>Filenames include original name, metadata, suffix (e.g., _base, _normal), resolution, and unique ID</li>
+    <li>Example: <code>griffonwoman_medieval_elf_base_1024x1024_abcd1234.png</code></li>
+    <li>Publicly accessible via <code>/files/&lt;filename&gt;</code></li>
+    </ul>
+
+    <h3>Typical Workflow</h3>
+    <ol>
+    <li>Upload <code>griffonwoman.jpg</code> (2000×1600)</li>
+    <li>Call: <code>POST /profile/gameasset?pack=medieval&race=elf&label=sword&pbr=1&compress=1</code></li>
+    <li>Receive compressed PNG+TGA base outputs plus normal/roughness for 512, 1024, 2048, 4096</li>
+    <li>Call: <code>POST /validate</code> to check for issues</li>
+    <li>Each file has metadata tags, direct URL, and file size info</li>
+    </ol>
+
+    <hr style="margin:28px 0;">
+
+    <h3>API</h3>
+    <pre style="background:#f7f7f7; padding:12px; border-radius:8px;">
+    POST /resize?size=512|1024|2048|4096|pow2
+        &mode=fit|crop|stretch
+        &format=png|tga
+        &pack=&race=&label=
+        &download=0|1
+        &compress=0|1
+
+    POST /batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit&pbr=0|1&compress=0|1
+
+    POST /profile/gameasset   (PNG+TGA, sizes 512–4096)&pbr=0|1&compress=0|1
+    POST /validate            (Checks for issues; same body)
+
+    Body for all:
+    - multipart/form-data with file field "file", or
+    - JSON: {"imageUrl":"https://yourcdn.com/image.png"}
     </pre>
-  </div>
-
-<script>
-function val(id){return document.getElementById(id).value.trim();}
-function checked(id){return document.getElementById(id).checked;}
-function qs(obj){return new URLSearchParams(Object.entries(obj).filter(([_,v])=>v!==undefined && v!==null && v!=="")).toString();}
-function tail(u){try{const p=new URL(u);return p.pathname.split("/").pop()}catch{return u}}
-
-async function postWithBody(url, bodyForm){
-  // If a file was chosen, submit multipart form directly; else send JSON {imageUrl}
-  const formEl = document.getElementById('ioForm');
-  const fileField = formEl.querySelector('input[type=file]');
-  const hasFile = fileField && fileField.files && fileField.files.length>0;
-  const pack = val('pack'), race = val('race'), label = val('label');
-  const urlObj = new URL(url, window.location.origin);
-  if (pack) urlObj.searchParams.set('pack', pack);
-  if (race) urlObj.searchParams.set('race', race);
-  if (label) urlObj.searchParams.set('label', label);
-
-  let res;
-  if (hasFile){
-    const fd = new FormData(formEl);
-    res = await fetch(urlObj.toString(), { method: 'POST', body: fd });
-  } else {
-    const imageUrl = val('imageUrl');
-    if (!imageUrl) throw new Error('Provide an image URL or choose a file.');
-    res = await fetch(urlObj.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify({ imageUrl })
-    });
-  }
-  if (!res.ok) throw new Error('Service error ' + res.status);
-  return res;
-}
-
-// ----- Custom Resize -----
-document.getElementById('btnResizeJson').addEventListener('click', async (e)=>{
-  e.preventDefault();
-  const out = document.getElementById('resizeOut');
-  const err = document.getElementById('resizeErr');
-  out.style.display='none'; out.textContent=''; err.textContent='';
-
-  try{
-    const mode = val('r_mode');
-    const format = val('r_format');
-    const pow2 = checked('r_pow2') ? '1' : '0';
-
-    // precedence: size -> widthxheight -> ratio@long
-    let endpoint = '/resize?mode='+encodeURIComponent(mode)+'&format='+encodeURIComponent(format)+'&pow2='+pow2;
-    const sz = val('r_size');
-    const wh = val('r_wh');
-    const rl = val('r_ratio_long');
-
-    if (sz){
-      endpoint += '&size='+encodeURIComponent(sz);
-    } else if (wh && wh.includes('x')){
-      const [w,h] = wh.toLowerCase().split('x').map(s=>s.trim());
-      endpoint += '&width='+encodeURIComponent(w)+'&height='+encodeURIComponent(h);
-    } else if (rl && rl.includes('@')){
-      const [ratio,long] = rl.split('@').map(s=>s.trim());
-      endpoint += '&ratio='+encodeURIComponent(ratio)+'&long='+encodeURIComponent(long);
-    } else {
-      throw new Error('Provide one sizing style: size OR widthxheight OR ratio@long');
-    }
-
-    const res = await postWithBody(endpoint, true);
-    const json = await res.json();
-
-    out.style.display='block';
-    out.innerHTML = '<div><b>Result</b></div><div class="mono">'+JSON.stringify(json, null, 2)+'</div>';
-  }catch(ex){ err.textContent = ex.message || String(ex); }
-});
-
-document.getElementById('btnResizeDownload').addEventListener('click', async (e)=>{
-  e.preventDefault();
-  const err = document.getElementById('resizeErr'); err.textContent='';
-  try{
-    const mode = val('r_mode');
-    const format = val('r_format');
-    const pow2 = checked('r_pow2') ? '1' : '0';
-    let endpoint = '/resize?download=1&mode='+encodeURIComponent(mode)+'&format='+encodeURIComponent(format)+'&pow2='+pow2;
-
-    const sz = val('r_size');
-    const wh = val('r_wh');
-    const rl = val('r_ratio_long');
-
-    if (sz){
-      endpoint += '&size='+encodeURIComponent(sz);
-    } else if (wh && wh.includes('x')){
-      const [w,h] = wh.toLowerCase().split('x').map(s=>s.trim());
-      endpoint += '&width='+encodeURIComponent(w)+'&height='+encodeURIComponent(h);
-    } else if (rl && rl.includes('@')){
-      const [ratio,long] = rl.split('@').map(s=>s.trim());
-      endpoint += '&ratio='+encodeURIComponent(ratio)+'&long='+encodeURIComponent(long);
-    } else {
-      throw new Error('Provide one sizing style: size OR widthxheight OR ratio@long');
-    }
-
-    // submit a hidden form to trigger download reliably
-    const form = document.createElement('form');
-    form.method = 'post';
-    form.action = endpoint;
-    form.enctype = 'multipart/form-data';
-    form.target = '_blank';
-    // include the same fields as ioForm (file/url/pack/race/label)
-    const io = document.getElementById('ioForm');
-    const clone = io.cloneNode(true);
-    // move chosen file input value (cannot clone FileList); append original instead
-    const fileInput = io.querySelector('input[type=file]');
-    if (fileInput && fileInput.files.length){
-      const fi = document.createElement('input');
-      fi.type='file'; fi.name='file';
-      // NOTE: browsers don’t allow programmatically setting FileList; this still works if no file is needed.
-      // If you need guaranteed file submit for download flow, use JSON + server returns file by URL.
-    }
-    // copy imageUrl/pack/race/label as hidden inputs for safety
-    ['imageUrl','pack','race','label'].forEach(id=>{
-      const v = document.getElementById(id).value;
-      if (v){
-        const hid = document.createElement('input');
-        hid.type='hidden'; hid.name=id; hid.value=v;
-        form.appendChild(hid);
-      }
-    });
-    document.body.appendChild(form);
-    form.submit();
-    setTimeout(()=>document.body.removeChild(form), 2000);
-  }catch(ex){ err.textContent = ex.message || String(ex); }
-});
-
-// ----- Pack Exporter -----
-function renderPack(json, mountId){
-  const m = document.getElementById(mountId);
-  m.style.display='block';
-  const groups = [];
-  if (json.results){
-    const order = ['png','tga','pbr'];
-    for (const key of order){
-      if (!json.results[key]) continue;
-      const dict = json.results[key];
-      if (key==='pbr'){
-        // PBR (if ever added back) would render maps here
-        continue;
-      }
-      const entries = Object.entries(dict).sort((a,b)=>Number(a[0].split('x')[0]) - Number(b[0].split('x')[0]));
-      groups.push('<h4>'+key.toUpperCase()+'</h4>');
-      for (const [sizeKey, info] of entries){
-        groups.push(
-          '<div class="row" style="justify-content:space-between;align-items:center;margin:6px 0;">' +
-            '<div><span class="mono">'+sizeKey+'</span></div>' +
-            '<div class="links">' +
-              '<a href="'+info.url+'" target="_blank" rel="noreferrer">Open</a>' +
-              '<button onclick="navigator.clipboard.writeText(\\''+info.url+'\\')">Copy URL</button>' +
-            '</div>' +
-          '</div>'
-        );
-      }
-    }
-  }
-  m.innerHTML = '<h3>Texture Pack Ready</h3>' + groups.join('') || '<div>No results.</div>';
-}
-
-document.getElementById('btnPack').addEventListener('click', async (e)=>{
-  e.preventDefault();
-  const out = document.getElementById('packOut');
-  const err = document.getElementById('packErr');
-  out.style.display='none'; out.textContent=''; err.textContent='';
-
-  try{
-    const sizes = val('p_sizes') || '512,1024,2048,4096';
-    const fmts = [checked('p_png')?'png':null, checked('p_tga')?'tga':null].filter(Boolean).join(',') || 'png,tga';
-    const mode = val('p_mode');
-    const pow2 = checked('p_pow2') ? '1' : '0';
-    const endpoint = '/profile/gameasset?' + new URLSearchParams({sizes: sizes, formats: fmts, mode: mode, pow2: pow2}).toString();
-
-    const res = await postWithBody(endpoint, true);
-    const json = await res.json();
-    renderPack(json, 'packOut');
-  }catch(ex){ err.textContent = ex.message || String(ex); }
-});
-
-document.getElementById('btnBatch').addEventListener('click', async (e)=>{
-  e.preventDefault();
-  const out = document.getElementById('packOut');
-  const err = document.getElementById('packErr');
-  out.style.display='none'; out.textContent=''; err.textContent='';
-
-  try{
-    const sizes = val('p_sizes') || '512,1024,2048,4096';
-    const fmts = [checked('p_png')?'png':null, checked('p_tga')?'tga':null].filter(Boolean).join(',') || 'png,tga';
-    const mode = val('p_mode');
-    const pow2 = checked('p_pow2') ? '1' : '0';
-    const endpoint = '/batch?' + new URLSearchParams({sizes: sizes, formats: fmts, mode: mode, pow2: pow2}).toString();
-
-    const res = await postWithBody(endpoint, true);
-    const json = await res.json();
-    renderPack(json, 'packOut');
-  }catch(ex){ err.textContent = ex.message || String(ex); }
-});
-</script>
-</body>
+  </body>
 </html>
-    """
+"""
 
 @app.post("/resize")
 def resize_endpoint():
