@@ -44,6 +44,22 @@ STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
 STABILITY_HOST = "https://api.stability.ai"
 
 # -----------------------------------------------------------------------------
+# Access control (API key)
+# -----------------------------------------------------------------------------
+API_KEY = os.environ.get("API_KEY")  # set this in Railway → Variables
+
+def require_api_key(fn):
+    from functools import wraps
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        # allow the home page and health-style checks to stay open elsewhere
+        key = request.headers.get("x-api-key") or request.args.get("api_key")
+        if API_KEY and key == API_KEY:
+            return fn(*args, **kwargs)
+        return jsonify({"error": "Unauthorized"}), 401
+    return wrapper
+
+# -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 def get_dimensions(base_size: int, ratio_str: str | None):
@@ -495,6 +511,7 @@ def index():
 </html>
 """
 
+@require_api_key
 @app.post("/resize")
 def resize_endpoint():
     img, original_name_or_err = load_image_from_request()
@@ -564,6 +581,7 @@ def resize_endpoint():
         "file_size_mb": round(bytes_ / (1024*1024), 3)
     })
 
+@require_api_key
 @app.post("/batch")
 def batch():
     img, original_name_or_err = load_image_from_request()
@@ -606,7 +624,7 @@ def batch():
             }
     return jsonify({"ok": True, "results": results})
 
-
+@require_api_key
 @app.post("/profile/gameasset")
 def profile_gameasset():
     # Convenience wrapper: sizes 512..4096, formats png+tga
@@ -618,7 +636,7 @@ def profile_gameasset():
     ):
         return batch()
 
-
+@require_api_key
 @app.post("/validate")
 def validate_endpoint():
     img, original_name_or_err = load_image_from_request()
@@ -656,7 +674,7 @@ def validate_endpoint():
 
     return jsonify({"ok": len(issues)==0, "issues": issues, "warnings": [] if issues else ["Texture passes basic validation."]})
 
-
+@require_api_key
 @app.post("/package")
 def package_endpoint():
     # Build a quick pack zip from /profile/gameasset results.
@@ -700,6 +718,7 @@ def package_endpoint():
 # Asset pack endpoint
 # -----------------------------------------------------------------------------
 @app.post("/generate_pack")
+@require_api_key
 def generate_pack():
     logger.info("POST /generate_pack")
     api_key = request.headers.get("X-API-Key")
@@ -837,6 +856,7 @@ def serve_file(filename):
         return send_file(temp_path)
     return jsonify({"error": "File not found"}), 404
 
+@require_api_key
 @app.post("/upload_file")
 def upload_file():
     if "file" not in request.files:
