@@ -12,7 +12,6 @@ import base64
 import logging
 import requests
 import numpy as np
-import send_from_directory
 
 from zipfile import ZipFile, ZIP_DEFLATED
 from scipy.ndimage import convolve, distance_transform_edt
