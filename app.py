@@ -235,6 +235,371 @@ def save_variant(img, original_name, size_str, label="base", file_format="png", 
     except Exception as e:
         logger.error(f"Failed to save variant {original_name} ({label}, {size_str}): {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
+    
+@app.get("/")
+def index():
+    return """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Assetgineer Texture Service</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{--b:#111;--t:#fff;--muted:#666;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;margin:40px auto;padding:0 16px;line-height:1.55}
+    .grid{display:grid;gap:12px}
+    @media(min-width:720px){.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}}
+    .card{border:1px solid #eee;border-radius:12px;padding:14px}
+    label{font-weight:600;margin:8px 0 6px;display:block}
+    input,select,button{width:100%;padding:10px;border:1px solid #ddd;border-radius:10px}
+    button{background:var(--b);color:var(--t);cursor:pointer}
+    button.secondary{background:#f5f5f5;color:#111;border-color:#eee}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .muted{color:var(--muted)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .links{display:flex;gap:10px}
+    .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#f3f3f3;border:1px solid #e9e9e9}
+    .ok{background:#f7f7f7;border-radius:12px;padding:12px;margin-top:10px}
+    .error{color:#b00020;margin-top:8px}
+  </style>
+</head>
+<body>
+  <h1>Assetgineer Texture Service</h1>
+  <p class="muted">Upload a file or paste an image URL. Then run a custom resize or export a full PNG/TGA pack (PoT sizes). This page only calls your existing endpoints; it won’t affect Base44.</p>
+
+  <form id="ioForm" method="post" enctype="multipart/form-data" class="grid g2 card">
+    <div>
+      <label>Upload image</label>
+      <input type="file" name="file" accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tga">
+    </div>
+    <div>
+      <label>OR Image URL</label>
+      <input type="url" name="imageUrl" id="imageUrl" placeholder="https://example.com/image.png">
+    </div>
+    <div>
+      <label>Pack <span class="muted">(optional)</span></label>
+      <input type="text" name="pack" id="pack" placeholder="Characters">
+    </div>
+    <div>
+      <label>Race <span class="muted">(optional)</span></label>
+      <input type="text" name="race" id="race" placeholder="Human">
+    </div>
+    <div>
+      <label>Label <span class="muted">(optional)</span></label>
+      <input type="text" name="label" id="label" placeholder="DesertRogue">
+    </div>
+  </form>
+
+  <!-- Quick buttons (download-ready) -->
+  <div class="card">
+    <h3>Quick download</h3>
+    <div class="row">
+      <button form="ioForm" formaction="/resize?size=512&download=1" formmethod="post" formtarget="_blank">Resize 512</button>
+      <button form="ioForm" formaction="/resize?size=1024&download=1" formmethod="post" formtarget="_blank">Resize 1024</button>
+      <button form="ioForm" formaction="/resize?size=2048&download=1" formmethod="post" formtarget="_blank">Resize 2048</button>
+      <button form="ioForm" formaction="/resize?size=4096&download=1" formmethod="post" formtarget="_blank">Resize 4096</button>
+      <button class="secondary" form="ioForm" formaction="/resize?size=pow2&download=1" formmethod="post" formtarget="_blank">Resize POW2</button>
+    </div>
+    <p class="muted">These open the processed file directly.</p>
+  </div>
+
+  <!-- Custom resize with controls -->
+  <div class="card grid g3">
+    <div>
+      <label>Mode</label>
+      <select id="r_mode">
+        <option value="fit" selected>fit (pad transparency)</option>
+        <option value="crop">crop (fill frame)</option>
+        <option value="stretch">stretch (force)</option>
+      </select>
+    </div>
+    <div>
+      <label>Format</label>
+      <select id="r_format">
+        <option value="png" selected>png</option>
+        <option value="tga">tga</option>
+      </select>
+    </div>
+    <div>
+      <label class="row" style="align-items:center;gap:8px"><input type="checkbox" id="r_pow2"> <span>Round each side to nearest PoT</span></label>
+    </div>
+
+    <div>
+      <label>Square size</label>
+      <input id="r_size" type="number" min="64" max="8192" step="64" placeholder="e.g. 1024">
+    </div>
+    <div>
+      <label>Width × Height</label>
+      <input id="r_wh" placeholder="e.g. 2048x1024">
+    </div>
+    <div>
+      <label>Ratio & long edge</label>
+      <input id="r_ratio_long" placeholder="e.g. 16:9 @ 2048  (type: 16:9@2048)">
+    </div>
+
+    <div class="row" style="grid-column:1/-1">
+      <button id="btnResizeJson">Run Custom Resize (show JSON)</button>
+      <button class="secondary" id="btnResizeDownload">Run Custom Resize (download)</button>
+    </div>
+    <div id="resizeOut" class="ok" style="display:none"></div>
+    <div id="resizeErr" class="error"></div>
+    <p class="muted" style="grid-column:1/-1">Tip: provide exactly one sizing style (Square OR Width×Height OR Ratio@Long). If multiple are set, square takes priority, then width×height, then ratio.</p>
+  </div>
+
+  <!-- Pack exporter -->
+  <div class="card grid g3">
+    <div>
+      <label>Sizes (comma PoT)</label>
+      <input id="p_sizes" value="512,1024,2048,4096">
+    </div>
+    <div>
+      <label>Formats</label>
+      <div class="row">
+        <label class="pill"><input type="checkbox" id="p_png" checked> PNG</label>
+        <label class="pill"><input type="checkbox" id="p_tga" checked> TGA</label>
+      </div>
+    </div>
+    <div>
+      <label>Mode</label>
+      <select id="p_mode">
+        <option value="fit" selected>fit</option>
+        <option value="crop">crop</option>
+        <option value="stretch">stretch</option>
+      </select>
+    </div>
+    <div class="row" style="align-items:center;gap:8px">
+      <label class="pill"><input type="checkbox" id="p_pow2"> pow2 (round each size)</label>
+    </div>
+
+    <div class="row" style="grid-column:1/-1">
+      <button id="btnPack">Export Pack (JSON links)</button>
+      <button class="secondary" id="btnBatch">Batch (defaults; JSON)</button>
+    </div>
+    <div id="packOut" class="ok" style="display:none"></div>
+    <div id="packErr" class="error"></div>
+  </div>
+
+  <div class="card">
+    <h3>API quick ref</h3>
+    <pre>
+POST /resize?size=512|1024|2048|4096|pow2
+     &mode=fit|crop|stretch
+     &format=png|tga
+     &pack=&race=&label=
+     &download=0|1
+
+POST /batch?sizes=512,1024,2048,4096&formats=png,tga&mode=fit
+POST /profile/gameasset   (PNG+TGA, sizes 512–4096)
+
+Body for all:
+- multipart/form-data with file "file", or
+- JSON: {"imageUrl": "https://…"}
+    </pre>
+  </div>
+
+<script>
+function val(id){return document.getElementById(id).value.trim();}
+function checked(id){return document.getElementById(id).checked;}
+function qs(obj){return new URLSearchParams(Object.entries(obj).filter(([_,v])=>v!==undefined && v!==null && v!=="")).toString();}
+function tail(u){try{const p=new URL(u);return p.pathname.split("/").pop()}catch{return u}}
+
+async function postWithBody(url, bodyForm){
+  // If a file was chosen, submit multipart form directly; else send JSON {imageUrl}
+  const formEl = document.getElementById('ioForm');
+  const fileField = formEl.querySelector('input[type=file]');
+  const hasFile = fileField && fileField.files && fileField.files.length>0;
+  const pack = val('pack'), race = val('race'), label = val('label');
+  const urlObj = new URL(url, window.location.origin);
+  if (pack) urlObj.searchParams.set('pack', pack);
+  if (race) urlObj.searchParams.set('race', race);
+  if (label) urlObj.searchParams.set('label', label);
+
+  let res;
+  if (hasFile){
+    const fd = new FormData(formEl);
+    res = await fetch(urlObj.toString(), { method: 'POST', body: fd });
+  } else {
+    const imageUrl = val('imageUrl');
+    if (!imageUrl) throw new Error('Provide an image URL or choose a file.');
+    res = await fetch(urlObj.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json' },
+      body: JSON.stringify({ imageUrl })
+    });
+  }
+  if (!res.ok) throw new Error('Service error ' + res.status);
+  return res;
+}
+
+// ----- Custom Resize -----
+document.getElementById('btnResizeJson').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  const out = document.getElementById('resizeOut');
+  const err = document.getElementById('resizeErr');
+  out.style.display='none'; out.textContent=''; err.textContent='';
+
+  try{
+    const mode = val('r_mode');
+    const format = val('r_format');
+    const pow2 = checked('r_pow2') ? '1' : '0';
+
+    // precedence: size -> widthxheight -> ratio@long
+    let endpoint = '/resize?mode='+encodeURIComponent(mode)+'&format='+encodeURIComponent(format)+'&pow2='+pow2;
+    const sz = val('r_size');
+    const wh = val('r_wh');
+    const rl = val('r_ratio_long');
+
+    if (sz){
+      endpoint += '&size='+encodeURIComponent(sz);
+    } else if (wh && wh.includes('x')){
+      const [w,h] = wh.toLowerCase().split('x').map(s=>s.trim());
+      endpoint += '&width='+encodeURIComponent(w)+'&height='+encodeURIComponent(h);
+    } else if (rl && rl.includes('@')){
+      const [ratio,long] = rl.split('@').map(s=>s.trim());
+      endpoint += '&ratio='+encodeURIComponent(ratio)+'&long='+encodeURIComponent(long);
+    } else {
+      throw new Error('Provide one sizing style: size OR widthxheight OR ratio@long');
+    }
+
+    const res = await postWithBody(endpoint, true);
+    const json = await res.json();
+
+    out.style.display='block';
+    out.innerHTML = '<div><b>Result</b></div><div class="mono">'+JSON.stringify(json, null, 2)+'</div>';
+  }catch(ex){ err.textContent = ex.message || String(ex); }
+});
+
+document.getElementById('btnResizeDownload').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  const err = document.getElementById('resizeErr'); err.textContent='';
+  try{
+    const mode = val('r_mode');
+    const format = val('r_format');
+    const pow2 = checked('r_pow2') ? '1' : '0';
+    let endpoint = '/resize?download=1&mode='+encodeURIComponent(mode)+'&format='+encodeURIComponent(format)+'&pow2='+pow2;
+
+    const sz = val('r_size');
+    const wh = val('r_wh');
+    const rl = val('r_ratio_long');
+
+    if (sz){
+      endpoint += '&size='+encodeURIComponent(sz);
+    } else if (wh && wh.includes('x')){
+      const [w,h] = wh.toLowerCase().split('x').map(s=>s.trim());
+      endpoint += '&width='+encodeURIComponent(w)+'&height='+encodeURIComponent(h);
+    } else if (rl && rl.includes('@')){
+      const [ratio,long] = rl.split('@').map(s=>s.trim());
+      endpoint += '&ratio='+encodeURIComponent(ratio)+'&long='+encodeURIComponent(long);
+    } else {
+      throw new Error('Provide one sizing style: size OR widthxheight OR ratio@long');
+    }
+
+    // submit a hidden form to trigger download reliably
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = endpoint;
+    form.enctype = 'multipart/form-data';
+    form.target = '_blank';
+    // include the same fields as ioForm (file/url/pack/race/label)
+    const io = document.getElementById('ioForm');
+    const clone = io.cloneNode(true);
+    // move chosen file input value (cannot clone FileList); append original instead
+    const fileInput = io.querySelector('input[type=file]');
+    if (fileInput && fileInput.files.length){
+      const fi = document.createElement('input');
+      fi.type='file'; fi.name='file';
+      // NOTE: browsers don’t allow programmatically setting FileList; this still works if no file is needed.
+      // If you need guaranteed file submit for download flow, use JSON + server returns file by URL.
+    }
+    // copy imageUrl/pack/race/label as hidden inputs for safety
+    ['imageUrl','pack','race','label'].forEach(id=>{
+      const v = document.getElementById(id).value;
+      if (v){
+        const hid = document.createElement('input');
+        hid.type='hidden'; hid.name=id; hid.value=v;
+        form.appendChild(hid);
+      }
+    });
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(()=>document.body.removeChild(form), 2000);
+  }catch(ex){ err.textContent = ex.message || String(ex); }
+});
+
+// ----- Pack Exporter -----
+function renderPack(json, mountId){
+  const m = document.getElementById(mountId);
+  m.style.display='block';
+  const groups = [];
+  if (json.results){
+    const order = ['png','tga','pbr'];
+    for (const key of order){
+      if (!json.results[key]) continue;
+      const dict = json.results[key];
+      if (key==='pbr'){
+        // PBR (if ever added back) would render maps here
+        continue;
+      }
+      const entries = Object.entries(dict).sort((a,b)=>Number(a[0].split('x')[0]) - Number(b[0].split('x')[0]));
+      groups.push('<h4>'+key.toUpperCase()+'</h4>');
+      for (const [sizeKey, info] of entries){
+        groups.push(
+          '<div class="row" style="justify-content:space-between;align-items:center;margin:6px 0;">' +
+            '<div><span class="mono">'+sizeKey+'</span></div>' +
+            '<div class="links">' +
+              '<a href="'+info.url+'" target="_blank" rel="noreferrer">Open</a>' +
+              '<button onclick="navigator.clipboard.writeText(\\''+info.url+'\\')">Copy URL</button>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+    }
+  }
+  m.innerHTML = '<h3>Texture Pack Ready</h3>' + groups.join('') || '<div>No results.</div>';
+}
+
+document.getElementById('btnPack').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  const out = document.getElementById('packOut');
+  const err = document.getElementById('packErr');
+  out.style.display='none'; out.textContent=''; err.textContent='';
+
+  try{
+    const sizes = val('p_sizes') || '512,1024,2048,4096';
+    const fmts = [checked('p_png')?'png':null, checked('p_tga')?'tga':null].filter(Boolean).join(',') || 'png,tga';
+    const mode = val('p_mode');
+    const pow2 = checked('p_pow2') ? '1' : '0';
+    const endpoint = '/profile/gameasset?' + new URLSearchParams({sizes: sizes, formats: fmts, mode: mode, pow2: pow2}).toString();
+
+    const res = await postWithBody(endpoint, true);
+    const json = await res.json();
+    renderPack(json, 'packOut');
+  }catch(ex){ err.textContent = ex.message || String(ex); }
+});
+
+document.getElementById('btnBatch').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  const out = document.getElementById('packOut');
+  const err = document.getElementById('packErr');
+  out.style.display='none'; out.textContent=''; err.textContent='';
+
+  try{
+    const sizes = val('p_sizes') || '512,1024,2048,4096';
+    const fmts = [checked('p_png')?'png':null, checked('p_tga')?'tga':null].filter(Boolean).join(',') || 'png,tga';
+    const mode = val('p_mode');
+    const pow2 = checked('p_pow2') ? '1' : '0';
+    const endpoint = '/batch?' + new URLSearchParams({sizes: sizes, formats: fmts, mode: mode, pow2: pow2}).toString();
+
+    const res = await postWithBody(endpoint, true);
+    const json = await res.json();
+    renderPack(json, 'packOut');
+  }catch(ex){ err.textContent = ex.message || String(ex); }
+});
+</script>
+</body>
+</html>
+    """
 
 # -----------------------------------------------------------------------------
 # Asset pack endpoint
