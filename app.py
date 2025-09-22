@@ -723,10 +723,7 @@ def package_endpoint():
 @app.post("/generate_pack")
 @require_api_key
 def generate_pack():
-    logger.info("POST /generate_pack")
-    api_key = request.headers.get("X-API-Key")
-    if api_key != "mock_api_key_123":
-        return jsonify({"error": "Unauthorized: Invalid API key"}), 401
+    logger.info("POST /generate_pack")    
     if not request.is_json:
         return jsonify({"error": "JSON payload required"}), 400
 
