@@ -335,6 +335,8 @@ def index():
     <h1>Assetgineer Texture Service</h1>
 
     <form method="post" enctype="multipart/form-data">
+      <p><label for="apiKey">API Key:</label></p>
+      <p><input type="password" id="apiKey" name="apiKey" placeholder="Enter API key" required></p>  
       <p><label>Upload image: <input type="file" name="file" accept=".png,.jpg,.jpeg,.tga" required></label></p>
       <p><label>Pack name: <input type="text" name="pack" required pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
       <p><label>Race (optional): <input type="text" name="race" pattern="[a-zA-Z0-9_-]+" title="Use alphanumeric, hyphen, or underscore"></label></p>
