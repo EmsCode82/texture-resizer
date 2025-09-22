@@ -47,6 +47,7 @@ STABILITY_HOST = "https://api.stability.ai"
 # Access control (API key)
 # -----------------------------------------------------------------------------
 API_KEY = os.environ.get("API_KEY")  # set this in Railway → Variables
+print("Loaded API_KEY:", bool(API_KEY))
 
 def require_api_key(fn):
     from functools import wraps
